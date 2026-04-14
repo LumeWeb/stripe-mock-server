@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to get spec", zap.Error(err))
 	}
-	s, err := server.NewServer(apiSpec, *verbose)
+	s, err := server.NewServer(apiSpec, *verbose, logger)
 	if err != nil {
 		logger.Fatal("Failed to create server", zap.Error(err))
 	}

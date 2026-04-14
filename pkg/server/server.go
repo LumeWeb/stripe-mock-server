@@ -62,9 +62,9 @@ type Server struct {
 }
 
 // NewServer creates a new Server
-func NewServer(spec *spec.Spec, verbose bool) (*Server, error) {
+func NewServer(spec *spec.Spec, verbose bool, logger *zap.Logger) (*Server, error) {
 	s := &Server{
-		extendedLogger: zap.L(),
+		extendedLogger: logger,
 		mux:            http.NewServeMux(),
 		spec:           spec,
 		verbose:        verbose,
