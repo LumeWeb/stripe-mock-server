@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"go.uber.org/zap/zaptest"
+
 	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
 	"github.com/stripe-mock-server/pkg/spec"
 	"github.com/stretchr/testify/assert"
@@ -17,7 +19,7 @@ import (
 func setupTestServer(t *testing.T, verbose bool) *Server {
 	apiSpec, err := spec.GetSpec()
 	assert.NoError(t, err)
-	s, err := NewServer(apiSpec, verbose)
+	s, err := NewServer(apiSpec, verbose, zaptest.NewLogger(t))
 	assert.NoError(t, err)
 	return s
 }

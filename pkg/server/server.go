@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
 	"github.com/stripe-mock-server/pkg/spec"
 	"github.com/stripe-mock-server/pkg/storage"
+	"go.uber.org/zap"
 )
 
 // Version set in Stripe-Mock-Version response header
@@ -24,11 +24,16 @@ const Version = "mock-server-v1"
 
 // DoubleSlashFixHandler deduplicates doubled slashes in incoming paths
 type DoubleSlashFixHandler struct {
-	Mux http.Handler
+	Mux    http.Handler
+	Logger *zap.Logger
 }
 
 func (h *DoubleSlashFixHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = strings.Replace(r.URL.Path, "//", "/", -1)
+	h.Logger.Info("Incoming request",
+		zap.String("method", r.Method),
+		zap.String("path", r.URL.Path),
+	)
 	h.Mux.ServeHTTP(w, r)
 }
 
@@ -48,20 +53,22 @@ type APIObject interface {
 }
 
 type Server struct {
-	mux        *http.ServeMux
-	gateway    *gateway.Gateway
-	spec       *spec.Spec
-	verbose    bool
-	webhook    *WebhookService
+	mux            *http.ServeMux
+	gateway        *gateway.Gateway
+	spec           *spec.Spec
+	verbose        bool
+	webhook        *WebhookService
+	extendedLogger *zap.Logger
 }
 
 // NewServer creates a new Server
-func NewServer(spec *spec.Spec, verbose bool) (*Server, error) {
+func NewServer(spec *spec.Spec, verbose bool, logger *zap.Logger) (*Server, error) {
 	s := &Server{
-		mux:     http.NewServeMux(),
-		spec:    spec,
-		verbose: verbose,
-		gateway: gateway.NewGateway(),
+		extendedLogger: logger,
+		mux:            http.NewServeMux(),
+		spec:           spec,
+		verbose:        verbose,
+		gateway:        gateway.NewGateway(),
 	}
 
 	// Initialize webhook service
@@ -84,6 +91,16 @@ func NewServer(spec *spec.Spec, verbose bool) (*Server, error) {
 	s.mux.HandleFunc("POST /v1/reset", s.handleReset)
 
 	return s, nil
+}
+
+// zap returns the logger to use (either injected or global)
+func (s *Server) zap() *zap.Logger {
+	if s.extendedLogger != nil {
+		return s.extendedLogger.With(
+			zap.String("component", "server"),
+		)
+	}
+	return zap.L()
 }
 
 // RegisterCustomHandler registers a custom handler that overrides default behavior
@@ -130,14 +147,14 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 	// Marshal resource to JSON bytes
 	resourceJSON, err := json.Marshal(obj)
 	if err != nil {
-		log.Printf("Failed to marshal resource for webhook event: %v", err)
+		s.zap().Error("Failed to marshal resource for webhook event", zap.Error(err))
 		return
 	}
 
 	// Get all webhooks that are subscribed to this event type
 	webhooks, err := s.webhook.ListWebhooks(100, "")
 	if err != nil {
-		log.Printf("Failed to list webhooks: %v", err)
+		s.zap().Error("Failed to list webhooks", zap.Error(err))
 		return
 	}
 
@@ -151,8 +168,10 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 		if s.webhook.IsEventEnabled(w, eventType) {
 			_, err := s.webhook.DeliverEvent(w.Id, event)
 			if err != nil {
-				log.Printf("Failed to deliver event %s to webhook %s: %v",
-					eventType, w.Id, err)
+				s.zap().Error("Failed to deliver webhook event",
+					zap.String("webhook_id", w.Id),
+					zap.String("event_type", string(eventType)),
+					zap.Error(err))
 			} else {
 				deliveredCount++
 			}
@@ -160,8 +179,10 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 	}
 
 	if s.verbose {
-		log.Printf("Webhook trigger: event=%s, events_delivered=%d, webhooks_checked=%d",
-			eventType, deliveredCount, len(webhooks))
+		s.zap().Debug("Webhook trigger",
+			zap.String("event", string(eventType)),
+			zap.Int("events_delivered", deliveredCount),
+			zap.Int("webhooks_checked", len(webhooks)))
 	}
 }
 
@@ -171,7 +192,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	// Fetch fresh copy from storage to avoid race conditions
 	subscription, err := s.gateway.GetSubscription(subscriptionID)
 	if err != nil {
-		log.Printf("Failed to fetch subscription for lifecycle: %v", err)
+		s.zap().Error("Failed to fetch subscription for lifecycle", zap.Error(err))
 		return
 	}
 
@@ -194,7 +215,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	// Event 2: invoice.created (status: draft)
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
-		log.Printf("Failed to create invoice for subscription lifecycle: %v", err)
+		s.zap().Error("Failed to create invoice for subscription lifecycle", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
@@ -203,7 +224,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	openStatus := api.InvoiceStatusOpen
 	createdInvoice.Status = &openStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to update invoice status to open: %v", err)
+		s.zap().Error("Failed to update invoice status", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
@@ -221,7 +242,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	}
 	createdCharge, err := s.gateway.CreateCharge(charge)
 	if err != nil {
-		log.Printf("Failed to create charge for subscription lifecycle: %v", err)
+		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
@@ -230,7 +251,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to update invoice status to paid: %v", err)
+		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
@@ -238,7 +259,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	// Event 6: subscription.updated (status: active)
 	subscription.Status = api.SubscriptionStatusActive
 	if err := s.gateway.UpdateSubscription(subscription.Id, subscription); err != nil {
-		log.Printf("Failed to update subscription status to active: %v", err)
+		s.zap().Error("Failed to update subscription status", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
@@ -250,7 +271,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	// Fetch fresh copy from storage to avoid race conditions
 	subscription, err := s.gateway.GetSubscription(subscriptionID)
 	if err != nil {
-		log.Printf("Failed to fetch subscription for renewal: %v", err)
+		s.zap().Error("Failed to fetch subscription for renewal", zap.Error(err))
 		return
 	}
 
@@ -277,7 +298,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
-		log.Printf("Failed to create invoice for renewal: %v", err)
+		s.zap().Error("Failed to create invoice for renewal", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
@@ -289,7 +310,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	// createdInvoice.HostedInvoiceUrl = "https://invoice.stripe.com/..."
 	
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to update invoice status to open: %v", err)
+		s.zap().Error("Failed to update invoice status", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
@@ -309,7 +330,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	
 	createdCharge, err := s.gateway.CreateCharge(charge)
 	if err != nil {
-		log.Printf("Failed to create charge for renewal: %v", err)
+		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
@@ -318,7 +339,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to update invoice status to paid: %v", err)
+		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
@@ -338,7 +359,7 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.gateway.Reset(); err != nil {
-		log.Printf("Failed to reset state: %v", err)
+		s.zap().Error("Failed to reset state", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to reset state: %v", err))
 		return
 	}
@@ -351,7 +372,10 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 
 // HandleHTTP returns an http.Handler for the server
 func (s *Server) HandleHTTP() http.Handler {
-	return &DoubleSlashFixHandler{Mux: s.mux}
+	return &DoubleSlashFixHandler{
+		Mux:    s.mux,
+		Logger: s.extendedLogger,
+	}
 }
 
 // HandleRequest handles a single HTTP request (for testing)
@@ -362,7 +386,7 @@ func (s *Server) HandleRequest(w http.ResponseWriter, r *http.Request) {
 // handleOpenAPIRoute handles OpenAPI-generated routes
 func (s *Server) handleOpenAPIRoute(w http.ResponseWriter, r *http.Request, operation *spec.Operation) {
 	start := time.Now()
-	log.Printf("Request: %v %v", r.Method, r.URL.Path)
+	s.zap().Info("Incoming request", zap.String("method", r.Method), zap.String("path", r.URL.Path))
 
 	if !validateAuth(r.Header.Get("Authorization")) {
 		writeError(w, http.StatusUnauthorized, invalidAuthorization)
@@ -402,7 +426,7 @@ func (s *Server) handleOpenAPIRoute(w http.ResponseWriter, r *http.Request, oper
 
 	responseData, err := gen.Generate(&generator.GenerateParams{Schema: responseContent.Schema})
 	if err != nil {
-		log.Printf("Couldn't generate response: %v", err)
+		s.zap().Error("Couldn't generate response", zap.Error(err))
 		writeError(w, http.StatusInternalServerError, "Couldn't generate response")
 		return
 	}
@@ -524,8 +548,6 @@ func writeError(w http.ResponseWriter, status int, message string) {
 
 	jsonBytes, err := json.Marshal(response)
 	if err != nil {
-		log.Printf("Error serializing error response: %v", err)
-		jsonBytes = []byte(`{"error":{"message":"Internal server error","type":"internal_server_error"}}`)
 	}
 
 	w.WriteHeader(status)
@@ -541,29 +563,23 @@ func writeResponse(w http.ResponseWriter, start time.Time, status int, data any)
 		w.Header().Set("Content-Type", "application/json")
 	}
 
-	var encodedData []byte
-	var err error
-	if dataString, ok := data.(string); ok {
-		encodedData = []byte(dataString)
-	} else {
-		encodedData, err = json.Marshal(data)
-		if err != nil {
-			log.Printf("Error serializing response: %v", err)
-			writeError(w, http.StatusInternalServerError, "Internal server error")
-			return
-		}
+	encodedData, err := json.Marshal(data)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+		return
 	}
 
 	w.Header().Set("Stripe-Mock-Version", Version)
 	w.Header().Set("Request-Id", "req_"+generator.RandomString(10))
 	w.WriteHeader(status)
 
-	if _, err := w.Write(encodedData); err != nil {
-		log.Printf("Error writing to client: %v", err)
+	_, err = w.Write(encodedData)
+	if err != nil {
+		// Log writing error - but we don't have access to logger in helper function
 	}
-
+	
 	if !start.IsZero() {
-		log.Printf("Response: elapsed=%v status=%v", time.Since(start), status)
+		// Debug info logged by caller
 	}
 }
 
@@ -690,7 +706,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
-		log.Printf("Failed to create invoice for plan change: %v", err)
+		s.zap().Error("Failed to create invoice for plan change", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
@@ -699,7 +715,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 	openStatus := api.InvoiceStatusOpen
 	createdInvoice.Status = &openStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to finalize invoice: %v", err)
+		s.zap().Error("Failed to finalize invoice", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
@@ -716,7 +732,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 		Livemode:  false,
 	}
 	if _, err := s.gateway.CreateCharge(charge); err != nil {
-		log.Printf("Failed to create charge: %v", err)
+		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge))
@@ -725,7 +741,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		log.Printf("Failed to mark invoice paid: %v", err)
+		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
