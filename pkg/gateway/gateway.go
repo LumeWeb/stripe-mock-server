@@ -531,12 +531,29 @@ func (g *Gateway) ListWebhookEndpoints(limit int, startingAfter string) ([]*api.
 		return nil, err
 	}
 
-	// Convert to pointers and apply limit
+	// Convert to pointers
 	ptrs := make([]*api.WebhookEndpoint, 0, len(items))
 	for _, item := range items {
 		ptrs = append(ptrs, &item)
 	}
 
+	// Apply cursor-based pagination
+	if startingAfter != "" {
+		startIndex := 0
+		for i, ep := range ptrs {
+			if ep.Id == startingAfter {
+				startIndex = i + 1
+				break
+			}
+		}
+		if startIndex < len(ptrs) {
+			ptrs = ptrs[startIndex:]
+		} else {
+			ptrs = nil
+		}
+	}
+
+	// Apply limit
 	if limit > 0 && limit < len(ptrs) {
 		ptrs = ptrs[:limit]
 	}
@@ -683,12 +700,12 @@ func (g *Gateway) UpdateSubscriptionItems(
 	var oldPriceID, newPriceID string
 	var prorationResult *ProrationResult
 
-	// Build new items slice
-	newItems := make([]api.SubscriptionItem, len(sub.Items.Data))
-	for i, existingItem := range sub.Items.Data {
+	// Build new items slice, filtering out deleted items
+	newItems := make([]api.SubscriptionItem, 0, len(sub.Items.Data))
+	for _, existingItem := range sub.Items.Data {
 		update := findUpdateById(updates, existingItem.Id)
 		if update != nil {
-			// Item marked for deletion
+			// Item marked for deletion - skip it
 			if update.Deleted {
 				continue
 			}
@@ -702,12 +719,13 @@ func (g *Gateway) UpdateSubscriptionItems(
 			oldPriceID = existingItem.Price.Id
 			newPriceID = update.PriceID
 
-			newItems[i] = existingItem
-			newItems[i].Price.Id = update.PriceID
-			newItems[i].Price.Type = api.PriceTypeEnumRecurring
+			updatedItem := existingItem
+			updatedItem.Price.Id = update.PriceID
+			updatedItem.Price.Type = api.PriceTypeEnumRecurring
+			newItems = append(newItems, updatedItem)
 		} else {
 			// Item not in update list, keep as is
-			newItems[i] = existingItem
+			newItems = append(newItems, existingItem)
 		}
 	}
 

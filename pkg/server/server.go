@@ -1,12 +1,10 @@
 package server
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"log"
 	"net/http"
 	"strings"
@@ -566,16 +564,68 @@ func retrieve[T any](getFunc func(id string) (*T, error), id string) (int, *T, e
 	return http.StatusOK, resource, nil
 }
 
-// GenerateRandomString generates a random string of specified length
-func GenerateRandomString(length int) string {
-	const charset = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+// createInvoiceChargeSequence creates an invoice and charge sequence for webhook delivery
+// Returns the created invoice and charge, or error
+func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reason *api.InvoiceBillingReasonEnum) (*api.Invoice, *api.Charge, error) {
+	now := int(time.Now().Unix())
+	invoiceId := "in_" + generator.RandomString(14)
 
-	result := make([]byte, length)
-	for i := 0; i < length; i++ {
-		n, _ := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-		result[i] = charset[n.Int64()]
+	// Create draft invoice
+	draftStatus := api.InvoiceStatusDraft
+	draftAmount := int(amount)
+	invoice := &api.Invoice{
+		Id:        invoiceId,
+		Object:    api.InvoiceObjectEnumInvoice,
+		Status:    &draftStatus,
+		AmountDue: draftAmount,
+		Currency:  currency,
+		Created:   now,
+		Livemode:  false,
 	}
-	return string(result)
+	if reason != nil {
+		invoice.BillingReason = reason
+	}
+
+	createdInvoice, err := s.gateway.CreateInvoice(invoice)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create invoice: %w", err)
+	}
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
+
+	// Finalize invoice
+	openStatus := api.InvoiceStatusOpen
+	createdInvoice.Status = &openStatus
+	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
+		return nil, nil, fmt.Errorf("failed to finalize invoice: %w", err)
+	}
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
+
+	// Create charge
+	chargeId := "ch_" + generator.RandomString(14)
+	amountInt := int(amount)
+	charge := &api.Charge{
+		Id:       chargeId,
+		Object:   api.ChargeObjectEnumCharge,
+		Amount:   amountInt,
+		Currency: currency,
+		Status:   api.ChargeStatusSucceeded,
+		Created:  now,
+		Livemode: false,
+	}
+	if _, err := s.gateway.CreateCharge(charge); err != nil {
+		return nil, nil, fmt.Errorf("failed to create charge: %w", err)
+	}
+	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge))
+
+	// Mark invoice paid
+	paidStatus := api.InvoiceStatusPaid
+	createdInvoice.Status = &paidStatus
+	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
+		return nil, nil, fmt.Errorf("failed to mark invoice paid: %w", err)
+	}
+	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
+
+	return createdInvoice, charge, nil
 }
 
 // triggerSubscriptionUpdate triggers subscription.updated webhook event

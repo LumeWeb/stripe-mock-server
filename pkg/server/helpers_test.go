@@ -2098,13 +2098,10 @@ func TestBuildPortalFeatures(t *testing.T) {
 				assert.True(t, features.CustomerUpdate.Enabled || len(features.CustomerUpdate.AllowedUpdates) > 0)
 			}
 
-			// Verify invoice history if present (note: field is invoice_history, not invoice_list)
-			if _, ok := tt.data["invoice_list"]; ok || tt.data["invoice_history"] != nil {
-				// Check the data key for invoice_list (builder converts it to invoice_history)
-				if ilData, ok := tt.data["invoice_list"].(map[string]any); ok {
-					if enabled, ok := ilData["enabled"].(bool); ok {
-						assert.Equal(t, enabled, features.InvoiceHistory.Enabled)
-					}
+			// Verify invoice history if present
+			if ihData, ok := tt.data["invoice_history"].(map[string]any); ok {
+				if enabled, ok := ihData["enabled"].(bool); ok {
+					assert.Equal(t, enabled, features.InvoiceHistory.Enabled)
 				}
 			}
 

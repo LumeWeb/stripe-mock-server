@@ -645,10 +645,14 @@ func buildPortalResourceScheduleUpdateAtPeriodEnd(data map[string]any) api.Porta
 	if conditions, ok := data["conditions"].([]any); ok {
 		for _, c := range conditions {
 			if condMap, ok := c.(map[string]any); ok {
-				conditionType := api.PortalResourceScheduleUpdateAtPeriodEndConditionType(condMap["type"].(string))
-				result.Conditions = append(result.Conditions, api.PortalResourceScheduleUpdateAtPeriodEndCondition{
-					Type: conditionType,
-				})
+				if typeVal, ok := condMap["type"]; ok {
+					if typeStr, ok := typeVal.(string); ok {
+						conditionType := api.PortalResourceScheduleUpdateAtPeriodEndConditionType(typeStr)
+						result.Conditions = append(result.Conditions, api.PortalResourceScheduleUpdateAtPeriodEndCondition{
+							Type: conditionType,
+						})
+					}
+				}
 			}
 		}
 	}

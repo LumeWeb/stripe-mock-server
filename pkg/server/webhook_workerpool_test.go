@@ -195,7 +195,9 @@ func TestWebhookRetryBackoff(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
+		mutex.Lock()
 		timestamps = append(timestamps, time.Now().UnixNano())
+		mutex.Unlock()
 		w.WriteHeader(http.StatusInternalServerError)
 		if attempts.Load() >= 4 {
 			close(done)
@@ -228,14 +230,15 @@ func TestWebhookRetryBackoff(t *testing.T) {
 	assert.GreaterOrEqual(t, attempts.Load(), int32(2))
 
 	// Verify timestamps increase (backoff is happening)
-	if len(timestamps) >= 3 {
-		mutex.Lock()
+	mutex.Lock()
+	tsLen := len(timestamps)
+	if tsLen >= 3 {
 		assert.True(t, timestamps[2] > timestamps[1], "retry should be delayed")
-		mutex.Unlock()
-	} else if len(timestamps) >= 2 {
+	} else if tsLen >= 2 {
 		// At least two attempts mean retry happened
 		_ = timestamps[1]
 	}
+	mutex.Unlock()
 }
 
 // TestWebhookConcurrentDelivery tests that multiple deliveries can be sent concurrently.

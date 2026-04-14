@@ -136,10 +136,15 @@ func (g *Generator) generateNumber(schema *spec.Schema) (float64, error) {
 // generateBoolean generates a boolean value
 func (g *Generator) generateBoolean(schema *spec.Schema) (bool, error) {
 	if len(schema.Enum) > 0 {
+		// Filter to only boolean values and pick randomly, consistent with other generators
+		var boolEnums []bool
 		for _, e := range schema.Enum {
 			if b, ok := e.(bool); ok {
-				return b, nil
+				boolEnums = append(boolEnums, b)
 			}
+		}
+		if len(boolEnums) > 0 {
+			return boolEnums[rand.Intn(len(boolEnums))], nil
 		}
 	}
 

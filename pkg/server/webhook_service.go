@@ -225,6 +225,9 @@ func (s *WebhookService) deliverToWebhook(task WebhookDeliveryTask) error {
 
 	// Generate signature using stripe SDK
 	timestamp := time.Now().Unix()
+	if w.Secret == nil {
+		return fmt.Errorf("webhook has no secret configured")
+	}
 	signature := webhook.ComputeSignature(time.Unix(timestamp, 0), payloadBytes, *w.Secret)
 
 	// Create signature header
