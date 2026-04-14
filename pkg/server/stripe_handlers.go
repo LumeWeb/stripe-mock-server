@@ -328,7 +328,7 @@ func (s *Server) handleCreateSubscription(r *http.Request, pathParams map[string
 	
 	
 	// Trigger subscription lifecycle webhook waterfall asynchronously
-	go s.triggerSubscriptionLifecycle(created)
+	go s.triggerSubscriptionLifecycle(created.Id)
 	
 	return http.StatusOK, created, nil
 }
@@ -350,7 +350,7 @@ func (s *Server) handleRenewSubscription(r *http.Request, pathParams map[string]
 	}
 	
 	// Trigger webhook waterfall asynchronously
-	go s.triggerSubscriptionRenewal(updated)
+	go s.triggerSubscriptionRenewal(updated.Id)
 	
 	// Return updated subscription
 	return http.StatusOK, updated, nil

@@ -167,7 +167,14 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 
 // triggerSubscriptionLifecycle triggers the webhook waterfall for subscription lifecycle
 // This simulates: subscription.created → invoice.created → invoice.finalized → charge.succeeded → invoice.paid → subscription.updated
-func (s *Server) triggerSubscriptionLifecycle(subscription *api.Subscription) {
+func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
+	// Fetch fresh copy from storage to avoid race conditions
+	subscription, err := s.gateway.GetSubscription(subscriptionID)
+	if err != nil {
+		log.Printf("Failed to fetch subscription for lifecycle: %v", err)
+		return
+	}
+
 	// Event 1: subscription.created (status: incomplete)
 	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionCreated, newWebhookSubscription(subscription))
 	
@@ -239,7 +246,14 @@ func (s *Server) triggerSubscriptionLifecycle(subscription *api.Subscription) {
 
 // triggerSubscriptionRenewal triggers the 5-event renewal waterfall
 // This simulates Stripe's automatic billing cycle completion when current_period_end is reached
-func (s *Server) triggerSubscriptionRenewal(subscription *api.Subscription) {
+func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
+	// Fetch fresh copy from storage to avoid race conditions
+	subscription, err := s.gateway.GetSubscription(subscriptionID)
+	if err != nil {
+		log.Printf("Failed to fetch subscription for renewal: %v", err)
+		return
+	}
+
 	// Get the price amount from subscription items (simplified)
 	// In production, would sum all items with quantities
 	amount := 1000 // Simplified default
