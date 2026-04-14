@@ -34,5 +34,7 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/stripe/stripe-go/v85 v85.0.1 // indirect
 	github.com/xeipuuv/gojsonschema v1.2.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+	go.uber.org/zap v1.27.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
