@@ -330,7 +330,8 @@ func (s *Server) handleUpdateProduct(r *http.Request, pathParams map[string]stri
 		existing.Metadata = mapAnyToString(metadata)
 	}
 
-	// Update updated timestamp
+	// Update updated timestamp for API response
+	// Note: Repository marshals data; Updated timestamp will be preserved
 	existing.Updated = int(time.Now().Unix())
 
 	if err := s.gateway.UpdateProduct(id, existing); err != nil {
