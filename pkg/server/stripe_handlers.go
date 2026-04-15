@@ -41,6 +41,10 @@ func (s *Server) RegisterStripeHandlers() error {
 		{http.MethodPost, "/v1/products", s.handleCreateProduct},
 		{http.MethodPost, "/v1/prices", s.handleCreatePrice},
 
+		// Webhook Endpoints
+		{http.MethodPost, "/v1/webhook_endpoints", s.handleCreateWebhookEndpoint},
+		{http.MethodGet, "/v1/webhook_endpoints/{id}", s.handleGetWebhookEndpoint},
+
 		// Subscriptions
 		{http.MethodPost, "/v1/subscriptions", s.handleCreateSubscription},
 		{http.MethodGet, "/v1/subscriptions/{id}", s.handleRetrieveSubscription},
@@ -721,4 +725,61 @@ func (s *Server) handleResumeSubscription(r *http.Request, pathParams map[string
 	go s.triggerSubscriptionResumed(resumed)
 
 	return http.StatusOK, resumed, nil
+}
+
+// Webhook Endpoint handlers
+
+func (s *Server) handleCreateWebhookEndpoint(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	id := "we_" + generator.RandomString(14)
+	
+	// Build webhook endpoint from request data
+	wbe := &api.WebhookEndpoint{
+		Id:        id,
+		Object:    api.WebhookEndpointObjectEnumWebhookEndpoint,
+		Created:   int(time.Now().Unix()),
+		Livemode:  false,
+		Url:       GetString(data, "url"),
+		Status:    "enabled",
+		Metadata:  map[string]string{},
+	}
+	
+	// Set description if provided
+	if desc := GetString(data, "description"); desc != "" {
+		wbe.Description = &desc
+	}
+	
+	// Set enabled_events if provided
+	if events := GetStringSlice(data, "enabled_events"); len(events) > 0 {
+		wbe.EnabledEvents = events
+	}
+	
+	// Set api_version if provided
+	if apiVersion := GetString(data, "api_version"); apiVersion != "" {
+		wbe.ApiVersion = &apiVersion
+	}
+	
+	// Generate a webhook secret
+	secret := "whsec_" + generator.RandomString(24)
+	wbe.Secret = &secret
+	
+	created, err := s.gateway.CreateWebhookEndpoint(wbe)
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	
+	return http.StatusOK, created, nil
+}
+
+func (s *Server) handleGetWebhookEndpoint(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	id := pathParams["id"]
+	if id == "" {
+		return http.StatusBadRequest, nil, fmt.Errorf("webhook endpoint ID required")
+	}
+	
+	wbe, err := s.gateway.GetWebhookEndpoint(id)
+	if err != nil {
+		return http.StatusNotFound, nil, err
+	}
+	
+	return http.StatusOK, wbe, nil
 }
