@@ -46,6 +46,10 @@ func (s *Server) RegisterStripeHandlers() error {
 		{http.MethodPost, "/v1/prices", s.handleCreatePrice},
 		{http.MethodGet, "/v1/prices", s.handleListPrices},
 
+		// Invoices & Charges
+		{http.MethodGet, "/v1/invoices", s.handleListInvoices},
+		{http.MethodGet, "/v1/charges", s.handleListCharges},
+
 		// Webhook Endpoints
 		{http.MethodPost, "/v1/webhook_endpoints", s.handleCreateWebhookEndpoint},
 		{http.MethodGet, "/v1/webhook_endpoints", s.handleListWebhookEndpoints},
