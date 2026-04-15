@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stripe/stripe-go/v85"
-	"github.com/stripe-mock-server/pkg/gateway"
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
 
 // TestWebhookDeliveryOrder tests that webhook events are processed in order

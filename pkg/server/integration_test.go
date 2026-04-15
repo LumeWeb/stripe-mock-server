@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap/zaptest"
 
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
-	"github.com/stripe-mock-server/pkg/spec"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

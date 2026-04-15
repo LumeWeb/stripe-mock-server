@@ -11,11 +11,11 @@ import (
 
 	"github.com/stripe/stripe-go/v85"
 	"github.com/stripe/stripe-mock/param"
-	"github.com/stripe-mock-server/pkg/gateway"
-	"github.com/stripe-mock-server/pkg/generator"
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
-	"github.com/stripe-mock-server/pkg/spec"
-	"github.com/stripe-mock-server/pkg/storage"
+	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
+	"go.lumeweb.com/stripe-mock-server/pkg/generator"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/spec"
+	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 	"go.uber.org/zap"
 )
 

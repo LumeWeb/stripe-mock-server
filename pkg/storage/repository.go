@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stripe-mock-server/pkg/generator")
+	"go.lumeweb.com/stripe-mock-server/pkg/generator")
 
 // ErrNotFound is returned when a resource is not found
 var ErrNotFound = errors.New("not found")

@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	"github.com/stripe-mock-server/pkg/server"
-	"github.com/stripe-mock-server/pkg/spec"
+	"go.lumeweb.com/stripe-mock-server/pkg/server"
+	"go.lumeweb.com/stripe-mock-server/pkg/spec"
 )
 
 func main() {

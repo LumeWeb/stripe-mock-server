@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
-	"github.com/stripe-mock-server/pkg/storage"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 )
 
 // Gateway provides business logic for Stripe-like operations
