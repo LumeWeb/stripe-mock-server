@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stripe-mock-server/pkg/spec"
+	"go.lumeweb.com/stripe-mock-server/pkg/spec"
 )
 
 // Version set in Stripe-Mock-Version response header

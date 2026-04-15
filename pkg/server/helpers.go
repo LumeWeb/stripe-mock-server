@@ -8,8 +8,8 @@ import (
 
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
-	"github.com/stripe-mock-server/pkg/generator"
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/generator"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
 
 // newKoanfFromMap creates a koanf instance from a map[string]any

@@ -11,9 +11,9 @@ import (
 	"github.com/stripe/stripe-go/v85"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/stripe-mock-server/pkg/gateway"
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
-	"github.com/stripe-mock-server/pkg/storage"
+	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 )
 
 // setupWebhookTest creates a test service with gateway

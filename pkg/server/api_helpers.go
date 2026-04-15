@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
 
 // webhookCustomer wraps *api.Customer for use as APIObject
