@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -1161,6 +1162,377 @@ func TestHandlerEdgeCases(t *testing.T) {
 // Helper function
 func strPtr(s string) *string {
 	return &s
+}
+
+// TestListHandlers tests all list endpoint handlers
+func TestListHandlers(t *testing.T) {
+	t.Run("ListProducts - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListProducts(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Product)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListProducts - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create some products
+		for i := 0; i < 3; i++ {
+			data := map[string]any{"name": fmt.Sprintf("Product %d", i)}
+			_, _, err := s.handleCreateProduct(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListProducts(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Product)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListPrices - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListPrices(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Price)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListPrices - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create some prices
+		for i := 0; i < 3; i++ {
+			data := map[string]any{
+				"currency":    "usd",
+				"unit_amount": 1000 * (i + 1),
+			}
+			_, _, err := s.handleCreatePrice(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListPrices(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Price)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListCustomers - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListCustomers(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Customer)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListCustomers - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create some customers
+		for i := 0; i < 3; i++ {
+			data := map[string]any{
+				"name":  fmt.Sprintf("Customer %d", i),
+				"email": fmt.Sprintf("customer%d@example.com", i),
+			}
+			_, _, err := s.handleCreateCustomer(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListCustomers(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Customer)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListSubscriptions - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListSubscriptions(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Subscription)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListSubscriptions - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create subscriptions directly via gateway
+		for i := 0; i < 3; i++ {
+			sub := &api.Subscription{
+				Status: api.SubscriptionStatusActive,
+			}
+			_, err := s.gateway.CreateSubscription(sub)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListSubscriptions(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Subscription)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListInvoices - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListInvoices(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Invoice)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListInvoices - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create invoices directly via gateway
+		for i := 0; i < 3; i++ {
+			status := api.InvoiceStatusDraft
+			invoice := &api.Invoice{
+				Status: &status,
+			}
+			_, err := s.gateway.CreateInvoice(invoice)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListInvoices(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Invoice)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListCharges - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListCharges(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.Charge)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListCharges - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create charges directly via gateway
+		for i := 0; i < 3; i++ {
+			charge := &api.Charge{
+				Amount:   1000 * (i + 1),
+				Currency: "usd",
+			}
+			_, err := s.gateway.CreateCharge(charge)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListCharges(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.Charge)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListCheckoutSessions - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListCheckoutSessions(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.CheckoutSession)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListCheckoutSessions - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create checkout sessions
+		for i := 0; i < 3; i++ {
+			data := map[string]any{
+				"mode":        "payment",
+				"success_url": fmt.Sprintf("https://example.com/success/%d", i),
+			}
+			_, _, err := s.handleCreateCheckoutSession(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListCheckoutSessions(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.CheckoutSession)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListBillingPortalConfigurations - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListBillingPortalConfigurations(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]api.BillingPortalConfiguration)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListBillingPortalConfigurations - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create billing portal configurations
+		for i := 0; i < 3; i++ {
+			data := map[string]any{
+				"features": map[string]any{
+					"invoice_history": map[string]any{
+						"enabled": true,
+					},
+				},
+			}
+			_, _, err := s.handleCreateBillingPortalConfiguration(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListBillingPortalConfigurations(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]api.BillingPortalConfiguration)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
+
+	t.Run("ListWebhookEndpoints - empty list", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		status, result, err := s.handleListWebhookEndpoints(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		assert.Equal(t, false, list["has_more"])
+		data, ok := list["data"].([]*api.WebhookEndpoint)
+		require.True(t, ok)
+		assert.Empty(t, data)
+	})
+
+	t.Run("ListWebhookEndpoints - with data", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create webhook endpoints
+		for i := 0; i < 3; i++ {
+			data := map[string]any{
+				"url":     fmt.Sprintf("https://example.com/webhook/%d", i),
+				"enabled_events": []string{"*"},
+			}
+			_, _, err := s.handleCreateWebhookEndpoint(nil, nil, data)
+			require.NoError(t, err)
+		}
+
+		status, result, err := s.handleListWebhookEndpoints(nil, nil, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		list, ok := result.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "list", list["object"])
+		data, ok := list["data"].([]*api.WebhookEndpoint)
+		require.True(t, ok)
+		assert.Len(t, data, 3)
+	})
 }
 
 // TestSubscriptionCancellation tests subscription cancellation scenarios
