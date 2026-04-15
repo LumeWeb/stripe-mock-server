@@ -25,28 +25,35 @@ func (s *Server) RegisterStripeHandlers() error {
 	routes := []routeDef{
 		// Customers
 		{http.MethodPost, "/v1/customers", s.handleCreateCustomer},
+		{http.MethodGet, "/v1/customers", s.handleListCustomers},
 		{http.MethodPost, "/v1/customers/{id}", s.handleUpdateCustomer},
 		{http.MethodGet, "/v1/customers/{id}", s.handleRetrieveCustomer},
 
 		// Checkout Sessions
 		{http.MethodPost, "/v1/checkout/sessions", s.handleCreateCheckoutSession},
+		{http.MethodGet, "/v1/checkout/sessions", s.handleListCheckoutSessions},
 		{http.MethodGet, "/v1/checkout/sessions/{id}", s.handleRetrieveCheckoutSession},
 		{http.MethodPost, "/v1/checkout/sessions/{id}/complete", s.handleCompleteCheckoutSession},
 
 		// Billing Portal
 		{http.MethodPost, "/v1/billing_portal/sessions", s.handleCreateBillingPortalSession},
 		{http.MethodPost, "/v1/billing_portal/configurations", s.handleCreateBillingPortalConfiguration},
+		{http.MethodGet, "/v1/billing_portal/configurations", s.handleListBillingPortalConfigurations},
 
 		// Products & Prices
 		{http.MethodPost, "/v1/products", s.handleCreateProduct},
+		{http.MethodGet, "/v1/products", s.handleListProducts},
 		{http.MethodPost, "/v1/prices", s.handleCreatePrice},
+		{http.MethodGet, "/v1/prices", s.handleListPrices},
 
 		// Webhook Endpoints
 		{http.MethodPost, "/v1/webhook_endpoints", s.handleCreateWebhookEndpoint},
+		{http.MethodGet, "/v1/webhook_endpoints", s.handleListWebhookEndpoints},
 		{http.MethodGet, "/v1/webhook_endpoints/{id}", s.handleGetWebhookEndpoint},
 
 		// Subscriptions
 		{http.MethodPost, "/v1/subscriptions", s.handleCreateSubscription},
+		{http.MethodGet, "/v1/subscriptions", s.handleListSubscriptions},
 		{http.MethodGet, "/v1/subscriptions/{id}", s.handleRetrieveSubscription},
 		{http.MethodPost, "/v1/subscriptions/{id}/renew", s.handleRenewSubscription},
 		{http.MethodPut, "/v1/subscriptions/{id}", s.handleUpdateSubscription},
@@ -282,6 +289,123 @@ func (s *Server) handleCreatePrice(r *http.Request, pathParams map[string]string
 	responseStatus, responseData, err := http.StatusOK, created, nil
 	go s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created))
 	return responseStatus, responseData, err
+}
+
+func (s *Server) handleListProducts(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	products, err := s.gateway.ListProducts()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     products,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListPrices(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	prices, err := s.gateway.ListPrices()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     prices,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListCustomers(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	customers, err := s.gateway.ListCustomers()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     customers,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListSubscriptions(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	subscriptions, err := s.gateway.ListSubscriptions()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     subscriptions,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListInvoices(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	invoices, err := s.gateway.ListInvoices()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     invoices,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListCharges(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	charges, err := s.gateway.ListCharges()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     charges,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListCheckoutSessions(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	sessions, err := s.gateway.ListCheckoutSessions()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     sessions,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListBillingPortalConfigurations(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	configs, err := s.gateway.ListBillingPortalConfigurations()
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     configs,
+		"has_more": false,
+	}, nil
+}
+
+func (s *Server) handleListWebhookEndpoints(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	endpoints, err := s.gateway.ListWebhookEndpoints(0, "")
+	if err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+	// Return in Stripe list format
+	return http.StatusOK, map[string]any{
+		"object":   "list",
+		"data":     endpoints,
+		"has_more": false,
+	}, nil
 }
 
 // Subscription handlers

@@ -128,6 +128,10 @@ func (g *Gateway) UpdateCustomer(id string, customer *api.Customer) error {
 	return g.customerRepo.Update(id, *customer)
 }
 
+func (g *Gateway) ListCustomers() ([]api.Customer, error) {
+	return g.customerRepo.List()
+}
+
 // Product operations
 
 func (g *Gateway) CreateProduct(product *api.Product) (*api.Product, error) {
@@ -144,6 +148,10 @@ func (g *Gateway) CreateProduct(product *api.Product) (*api.Product, error) {
 
 func (g *Gateway) GetProduct(id string) (*api.Product, error) {
 	return g.productRepo.Get(id)
+}
+
+func (g *Gateway) ListProducts() ([]api.Product, error) {
+	return g.productRepo.List()
 }
 
 // Price operations
@@ -164,6 +172,10 @@ func (g *Gateway) GetPrice(id string) (*api.Price, error) {
 	return g.priceRepo.Get(id)
 }
 
+func (g *Gateway) ListPrices() ([]api.Price, error) {
+	return g.priceRepo.List()
+}
+
 // Checkout Session operations
 
 func (g *Gateway) CreateCheckoutSession(session *api.CheckoutSession) (*api.CheckoutSession, error) {
@@ -180,6 +192,10 @@ func (g *Gateway) CreateCheckoutSession(session *api.CheckoutSession) (*api.Chec
 
 func (g *Gateway) GetCheckoutSession(id string) (*api.CheckoutSession, error) {
 	return g.sessionRepo.Get(id)
+}
+
+func (g *Gateway) ListCheckoutSessions() ([]api.CheckoutSession, error) {
+	return g.sessionRepo.List()
 }
 
 func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, error) {
@@ -226,6 +242,10 @@ func (g *Gateway) CreateSubscription(sub *api.Subscription) (*api.Subscription, 
 
 func (g *Gateway) GetSubscription(id string) (*api.Subscription, error) {
 	return g.subscriptionRepo.Get(id)
+}
+
+func (g *Gateway) ListSubscriptions() ([]api.Subscription, error) {
+	return g.subscriptionRepo.List()
 }
 
 func (g *Gateway) UpdateSubscription(id string, subscription *api.Subscription) error {
@@ -471,6 +491,10 @@ func (g *Gateway) GetInvoice(id string) (*api.Invoice, error) {
 	return g.invoiceRepo.Get(id)
 }
 
+func (g *Gateway) ListInvoices() ([]api.Invoice, error) {
+	return g.invoiceRepo.List()
+}
+
 // Charge operations
 
 func (g *Gateway) CreateCharge(charge *api.Charge) (*api.Charge, error) {
@@ -489,6 +513,10 @@ func (g *Gateway) UpdateCharge(id string, charge *api.Charge) error {
 	return g.chargeRepo.Update(id, *charge)
 }
 
+func (g *Gateway) ListCharges() ([]api.Charge, error) {
+	return g.chargeRepo.List()
+}
+
 // Billing Portal Configuration operations (using generated types)
 
 func (g *Gateway) CreateBillingPortalConfiguration(config *api.BillingPortalConfiguration) (*api.BillingPortalConfiguration, error) {
@@ -505,6 +533,10 @@ func (g *Gateway) CreateBillingPortalConfiguration(config *api.BillingPortalConf
 
 func (g *Gateway) GetBillingPortalConfiguration(id string) (*api.BillingPortalConfiguration, error) {
 	return g.billingConfigRepo.Get(id)
+}
+
+func (g *Gateway) ListBillingPortalConfigurations() ([]api.BillingPortalConfiguration, error) {
+	return g.billingConfigRepo.List()
 }
 
 // Webhook operations
