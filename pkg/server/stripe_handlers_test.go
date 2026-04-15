@@ -309,6 +309,77 @@ func TestProductHandlers(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, description, *product.Description)
 	})
+
+	t.Run("UpdateProduct with default_price", func(t *testing.T) {
+		// Create a product first
+		createData := map[string]any{
+			"name": "Test Product for Update",
+		}
+		status, result, err := s.handleCreateProduct(nil, nil, createData)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+		product := result.(*api.Product)
+
+		// Create a price
+		priceData := map[string]any{
+			"currency":  "usd",
+			"unit_amount": 1999,
+			"type":       "recurring",
+			"product":    product.Id,
+		}
+		priceStatus, priceResult, priceErr := s.handleCreatePrice(nil, nil, priceData)
+		require.NoError(t, priceErr)
+		assert.Equal(t, http.StatusOK, priceStatus)
+		price := priceResult.(*api.Price)
+
+		// Update the product to set default_price
+		updateData := map[string]any{
+			"default_price": price.Id,
+		}
+		status, result, err = s.handleUpdateProduct(nil, map[string]string{"id": product.Id}, updateData)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		updatedProduct := result.(*api.Product)
+		assert.Equal(t, product.Id, updatedProduct.Id)
+		require.NotNil(t, updatedProduct.DefaultPrice)
+		updatedPriceID, _ := updatedProduct.DefaultPrice.AsProductDefaultPrice0()
+		assert.Equal(t, price.Id, updatedPriceID)
+	})
+
+	t.Run("UpdateProduct - not found", func(t *testing.T) {
+		updateData := map[string]any{
+			"default_price": "price_test123",
+		}
+		status, _, err := s.handleUpdateProduct(nil, map[string]string{"id": "nonexistent_product"}, updateData)
+		assert.Equal(t, http.StatusNotFound, status)
+		assert.Error(t, err)
+	})
+
+	t.Run("UpdateProduct - partial update name only", func(t *testing.T) {
+		// Create a product
+		createData := map[string]any{
+			"name": "Original Name",
+		}
+		status, result, err := s.handleCreateProduct(nil, nil, createData)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+		product := result.(*api.Product)
+
+		// Update only the name
+		updateData := map[string]any{
+			"name": "New Name",
+		}
+		status, result, err = s.handleUpdateProduct(nil, map[string]string{"id": product.Id}, updateData)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		updatedProduct := result.(*api.Product)
+		assert.Equal(t, "New Name", updatedProduct.Name)
+		// Should preserve other fields
+		assert.NotZero(t, updatedProduct.Id, "Product ID should be preserved")
+		assert.NotZero(t, updatedProduct.Created, "Created timestamp should be preserved")
+	})
 }
 
 // Test Price Handlers

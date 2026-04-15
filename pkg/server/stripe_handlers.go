@@ -42,6 +42,7 @@ func (s *Server) RegisterStripeHandlers() error {
 
 		// Products & Prices
 		{http.MethodPost, "/v1/products", s.handleCreateProduct},
+		{http.MethodPost, "/v1/products/{id}", s.handleUpdateProduct},
 		{http.MethodGet, "/v1/products", s.handleListProducts},
 		{http.MethodPost, "/v1/prices", s.handleCreatePrice},
 		{http.MethodGet, "/v1/prices", s.handleListPrices},
@@ -293,6 +294,51 @@ func (s *Server) handleCreatePrice(r *http.Request, pathParams map[string]string
 	responseStatus, responseData, err := http.StatusOK, created, nil
 	go s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created))
 	return responseStatus, responseData, err
+}
+
+func (s *Server) handleUpdateProduct(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	id := pathParams["id"]
+	existing, err := s.gateway.GetProduct(id)
+	if err != nil {
+		return http.StatusNotFound, nil, err
+	}
+
+	// Update default_price if provided
+	if defaultPrice := GetString(data, "default_price"); defaultPrice != "" {
+		var dp api.Product_DefaultPrice
+		_ = dp.FromProductDefaultPrice0(defaultPrice)
+		existing.DefaultPrice = &dp
+	}
+
+	// Update name if provided
+	if name := GetString(data, "name"); name != "" {
+		existing.Name = name
+	}
+
+	// Update description if provided
+	if desc, ok := GetStringWithEmpty(data, "description"); ok {
+		existing.Description = desc
+	}
+
+	// Update active if provided
+	if _, ok := GetStringWithEmpty(data, "active"); ok {
+		existing.Active = GetBool(data, "active")
+	}
+
+	// Update metadata if provided
+	if metadata := GetStringMap(data, "metadata"); len(metadata) > 0 {
+		existing.Metadata = mapAnyToString(metadata)
+	}
+
+	// Update updated timestamp
+	existing.Updated = int(time.Now().Unix())
+
+	if err := s.gateway.UpdateProduct(id, existing); err != nil {
+		return http.StatusInternalServerError, nil, err
+	}
+
+	go s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing))
+	return http.StatusOK, existing, nil
 }
 
 func (s *Server) handleListProducts(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {

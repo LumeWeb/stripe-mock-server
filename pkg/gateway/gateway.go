@@ -146,6 +146,11 @@ func (g *Gateway) CreateProduct(product *api.Product) (*api.Product, error) {
 	return g.productRepo.Get(id)
 }
 
+// UpdateProduct updates an existing product
+func (g *Gateway) UpdateProduct(id string, product *api.Product) error {
+	return g.productRepo.Update(id, *product)
+}
+
 func (g *Gateway) GetProduct(id string) (*api.Product, error) {
 	return g.productRepo.Get(id)
 }
