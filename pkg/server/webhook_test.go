@@ -486,34 +486,31 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		assert.Equal(t, "customer", objMap["object"], "data.object.object should be set")
 	})
 
-	// Test that related objects are expanded
+	// Test realistic flow: checkout.session.completed with auto-created subscription
 	t.Run("checkout.session.completed has expanded subscription", func(t *testing.T) {
 		receivedPayloads = nil
 
-		// Create a subscription in the gateway
-		sub := &api.Subscription{
-			Id:     "sub_expanded_test",
-			Object: api.SubscriptionObjectEnumSubscription,
-			Status: api.SubscriptionStatusActive,
-		}
 		gw := service.Gateway()
-		_, err := gw.CreateSubscription(sub)
-		require.NoError(t, err)
 
-		// Create a checkout session with subscription as ID string (not expanded)
-		var subUnion api.CheckoutSession_Subscription
-		err = subUnion.FromCheckoutSessionSubscription0("sub_expanded_test")
-		require.NoError(t, err)
-
+		// Create a checkout session in subscription mode (simulates real creation)
+		openStatus := api.CheckoutSessionStatusOpen
 		session := &api.CheckoutSession{
-			Id:           "cs_expanded_test",
-			Object:       api.CheckoutSessionObjectEnumCheckoutSession,
-			Status:       new(api.CheckoutSessionStatusComplete),
-			Subscription: &subUnion,
+			Object:            api.CheckoutSessionObjectEnumCheckoutSession,
+			Status:            &openStatus,
+			Mode:              api.CheckoutSessionModeEnumSubscription,
+			ClientReferenceId: new("12345"),
+			Livemode:          true,
 		}
+		created, err := gw.CreateCheckoutSession(session)
+		require.NoError(t, err)
 
-		// Create webhook wrapper with gateway (this triggers expansion during marshal)
-		wrapper := newWebhookCheckoutSession(session, gw)
+		// Complete the session (this creates a subscription automatically)
+		completed, err := gw.CompleteCheckoutSession(created.Id)
+		require.NoError(t, err)
+		require.NotNil(t, completed.Subscription, "completed session should have subscription")
+
+		// Create webhook wrapper with gateway (triggers expansion during marshal)
+		wrapper := newWebhookCheckoutSession(completed, gw)
 
 		// Marshal to trigger expansion
 		jsonBytes, err := json.Marshal(wrapper)
@@ -540,8 +537,14 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		subField := objMap["subscription"]
 		subMap, ok := subField.(map[string]any)
 		require.True(t, ok, "subscription should be an expanded object, not a string ID")
-		assert.Equal(t, "sub_expanded_test", subMap["id"], "subscription.id should match")
+		assert.NotEmpty(t, subMap["id"], "subscription.id should be set")
 		assert.Equal(t, "subscription", subMap["object"], "subscription.object should be set")
+
+		// Verify mode is subscription
+		assert.Equal(t, "subscription", objMap["mode"], "mode should be subscription")
+
+		// Verify client_reference_id is preserved
+		assert.Equal(t, "12345", objMap["client_reference_id"], "client_reference_id should be preserved")
 	})
 }
 
