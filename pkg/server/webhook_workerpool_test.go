@@ -22,7 +22,7 @@ import (
 // due to the single worker in the worker pool.
 func TestWebhookDeliveryOrder(t *testing.T) {
 	gw := gateway.NewGateway()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 	// Create a test HTTP server that records the order of requests
@@ -93,7 +93,7 @@ func TestWebhookDeliveryOrder(t *testing.T) {
 // TestWebhookRetry tests that webhook deliveries are retried on failure.
 func TestWebhookRetry(t *testing.T) {
 	gw := gateway.NewGateway()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 	var attempts atomic.Int32
@@ -142,7 +142,7 @@ func TestWebhookRetryOnTimeout(t *testing.T) {
 	gw := gateway.NewGateway()
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	var attempts atomic.Int32
 	done := make(chan struct{})
@@ -186,7 +186,7 @@ func TestWebhookRetryBackoff(t *testing.T) {
 	gw := gateway.NewGateway()
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	var attempts atomic.Int32
 	var timestamps []int64
@@ -246,7 +246,7 @@ func TestWebhookConcurrentDelivery(t *testing.T) {
 	gw := gateway.NewGateway()
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate some work
@@ -282,7 +282,7 @@ func TestWebhookConcurrentDelivery(t *testing.T) {
 // TestWebhookServiceClose tests that Close gracefully stops the worker pool.
 func TestWebhookServiceClose(t *testing.T) {
 	gw := gateway.NewGateway()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	// Close should not panic
 	assert.NotPanics(t, func() {
@@ -295,7 +295,7 @@ func TestWebhookSuccessfulDelivery(t *testing.T) {
 	gw := gateway.NewGateway()
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	var receivedBody bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -326,7 +326,7 @@ func TestWebhookServiceNonblocking(t *testing.T) {
 	gw := gateway.NewGateway()
 
 	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw)
+	service := NewWebhookService(gw, "2020-08-27")
 
 	// This should not block - the delivery happens in the worker pool
 	start := time.Now()
@@ -342,18 +342,18 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 	t.Run("Immediate cancellation triggers subscription.deleted", func(t *testing.T) {
 		gw := gateway.NewGateway()
 		apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-		
+
 		// Create test HTTP server that receives webhooks
 		var receivedEvents []string
 		var mutex sync.Mutex
 		done := make(chan struct{})
-		
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatal(err)
 			}
-			
+
 			mutex.Lock()
 			receivedEvents = append(receivedEvents, payload["type"].(string))
 			if len(receivedEvents) >= 1 {
@@ -363,9 +363,9 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
-		
+
 		// Create webhook endpoint
-		service := NewWebhookService(gw)
+		service := NewWebhookService(gw, "2020-08-27")
 		opts := &CreateOpts{
 			URL:      server.URL,
 			Enabled:  []string{"*"},
@@ -375,12 +375,12 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 		w, err := service.CreateWebhook(opts.URL, opts)
 		require.NoError(t, err)
 		require.NotNil(t, w)
-		
+
 		// Create an active subscription directly
 		now := int(time.Now().Unix())
 		var cust api.Subscription_Customer
 		_ = cust.FromSubscriptionCustomer0("cus_test")
-		
+
 		sub := &api.Subscription{
 			Id:                "sub_test_123",
 			Object:            api.SubscriptionObjectEnumSubscription,
@@ -400,14 +400,14 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 				Price: api.Price{Id: "price_test", Object: api.PriceObjectEnumPrice},
 			},
 		}
-		
+
 		created, err := gw.CreateSubscription(sub)
 		require.NoError(t, err)
-		
+
 		// Cancel the subscription
 		_, err = gw.CancelSubscription(created.Id)
 		require.NoError(t, err)
-		
+
 		// Trigger webhook manually (simulating the handler behavior)
 		service.DeliverEvent(w.Id, &stripe.Event{
 			ID:          "evt_cancel",
@@ -417,7 +417,7 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 			Data:        &stripe.EventData{Raw: []byte(`{"id":"sub_test_123"}`), Object: map[string]any{}},
 			Object:      "event",
 		})
-		
+
 		// Wait for webhook delivery
 		select {
 		case <-done:
@@ -425,7 +425,7 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("webhook not received in time")
 		}
-		
+
 		mutex.Lock()
 		assert.Contains(t, receivedEvents, "customer.subscription.deleted")
 		mutex.Unlock()

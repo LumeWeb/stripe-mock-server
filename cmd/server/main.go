@@ -17,16 +17,12 @@ func main() {
 	// Parse command-line flags
 	port := flag.String("port", "8080", "Port to listen on")
 	verbose := flag.Bool("verbose", false, "Enable verbose logging")
+	stripeAPIVersion := flag.String("stripe-api-version", "", "Stripe API version to use (defaults to spec version if not specified)")
 	flag.Parse()
 
 	// Create logger
 	logger := setupLogger(*verbose)
 	defer logger.Sync() // Flush any buffered log entries
-
-	logger.Info("Starting stateful mock server",
-		zap.String("port", *port),
-		zap.Bool("verbose", *verbose),
-	)
 
 	logger.Info("Loading embedded spec")
 
@@ -34,7 +30,23 @@ func main() {
 	if err != nil {
 		logger.Fatal("Failed to get spec", zap.Error(err))
 	}
-	s, err := server.NewServer(apiSpec, *verbose, logger)
+
+	// Determine API version to use
+	apiVersion := *stripeAPIVersion
+	if apiVersion == "" && apiSpec.Info != nil {
+		apiVersion = apiSpec.Info.Version
+	}
+	if apiVersion == "" {
+		apiVersion = "2020-08-27" // Fallback default
+	}
+
+	logger.Info("Starting stateful mock server",
+		zap.String("port", *port),
+		zap.Bool("verbose", *verbose),
+		zap.String("stripe-api-version", apiVersion),
+	)
+
+	s, err := server.NewServer(apiSpec, *verbose, apiVersion, logger)
 	if err != nil {
 		logger.Fatal("Failed to create server", zap.Error(err))
 	}
@@ -64,8 +76,8 @@ func setupLogger(verbose bool) *zap.Logger {
 	}
 
 	config := zap.Config{
-		Level:            zap.NewAtomicLevelAt(zapcore.InfoLevel),
-		Development:      development,
+		Level:       zap.NewAtomicLevelAt(zapcore.InfoLevel),
+		Development: development,
 		Sampling: &zap.SamplingConfig{
 			Initial:    100,
 			Thereafter: 100,
