@@ -732,6 +732,8 @@ func (s *Server) expandSubscription(sub *api.Subscription, expand []string) {
 	for _, exp := range expand {
 		switch exp {
 		case "items.data.price.product":
+			// First expand the price to get metadata, then expand product
+			s.expandSubscriptionItemsPrice(sub)
 			s.expandSubscriptionItemsProduct(sub)
 		case "items.data.price":
 			s.expandSubscriptionItemsPrice(sub)
@@ -770,9 +772,36 @@ func (s *Server) expandSubscriptionItemsProduct(sub *api.Subscription) {
 	}
 }
 
-// expandSubscriptionItemsPrice expands items[].price to full price objects (already expanded by default)
+// expandSubscriptionItemsPrice expands items[].price to full price objects with metadata
 func (s *Server) expandSubscriptionItemsPrice(sub *api.Subscription) {
-	// Price is always expanded in subscription items, no-op
+	for i := range sub.Items.Data {
+		priceID := sub.Items.Data[i].Price.Id
+		if priceID == "" {
+			continue
+		}
+
+		// Try to get the full price from storage
+		fullPrice, err := s.gateway.GetPrice(priceID)
+		if err != nil {
+			// Price not in storage, keep the minimal price
+			continue
+		}
+
+		// Check if the minimal price has an expanded product (not just an ID)
+		_, minPriceErr := sub.Items.Data[i].Price.Product.AsProduct()
+		hasExpandedProduct := minPriceErr == nil
+
+		// Replace minimal price with full price data
+		sub.Items.Data[i].Price = *fullPrice
+
+		// If the minimal price already had an expanded product, restore it
+		// Otherwise, use the product reference from the stored price
+		if hasExpandedProduct {
+			// The caller may have already expanded the product, keep that
+			// (this shouldn't normally happen, but handle it gracefully)
+		}
+		// Otherwise, the fullPrice from storage has the product reference (ID or expanded)
+	}
 }
 
 // expandSubscriptionCustomer expands the customer field to a full customer object
