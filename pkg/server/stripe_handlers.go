@@ -106,7 +106,7 @@ func (s *Server) handleCreateCustomer(r *http.Request, pathParams map[string]str
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypeCustomerCreated, newWebhookCustomer(created))
+	go s.triggerWebhookEvent(stripe.EventTypeCustomerCreated, newWebhookCustomer(created, s.gateway))
 	return responseStatus, responseData, err
 }
 
@@ -129,7 +129,7 @@ func (s *Server) handleUpdateCustomer(r *http.Request, pathParams map[string]str
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, existing, nil
-	go s.triggerWebhookEvent(stripe.EventTypeCustomerUpdated, newWebhookCustomer(existing))
+	go s.triggerWebhookEvent(stripe.EventTypeCustomerUpdated, newWebhookCustomer(existing, s.gateway))
 	return responseStatus, responseData, err
 }
 
@@ -162,7 +162,7 @@ func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[s
 	}
 	
 	// Trigger webhook asynchronously
-	go s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated))
+	go s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated, s.gateway))
 	
 	return http.StatusOK, updated, nil
 }
@@ -281,7 +281,7 @@ func (s *Server) handleCreateProduct(r *http.Request, pathParams map[string]stri
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypeProductCreated, newWebhookProduct(created))
+	go s.triggerWebhookEvent(stripe.EventTypeProductCreated, newWebhookProduct(created, s.gateway))
 	return responseStatus, responseData, err
 }
 
@@ -292,7 +292,7 @@ func (s *Server) handleCreatePrice(r *http.Request, pathParams map[string]string
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created))
+	go s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created, s.gateway))
 	return responseStatus, responseData, err
 }
 
@@ -338,7 +338,7 @@ func (s *Server) handleUpdateProduct(r *http.Request, pathParams map[string]stri
 		return http.StatusInternalServerError, nil, err
 	}
 
-	go s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing))
+	go s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing, s.gateway))
 	return http.StatusOK, existing, nil
 }
 

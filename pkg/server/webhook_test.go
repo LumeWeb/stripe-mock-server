@@ -357,7 +357,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "cs_test123",
 			Object: "checkout.session",
 		}
-		wrapper := newWebhookCheckoutSession(session)
+		wrapper := newWebhookCheckoutSession(session, nil)
 		
 		// Serialize the wrapper
 		jsonBytes, err := json.Marshal(wrapper)
@@ -375,7 +375,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "sub_test123",
 			Object: "subscription",
 		}
-		wrapper := newWebhookSubscription(sub)
+		wrapper := newWebhookSubscription(sub, nil)
 		
 		jsonBytes, err := json.Marshal(wrapper)
 		require.NoError(t, err)
@@ -389,7 +389,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "cus_test123",
 			Object: "customer",
 		}
-		wrapper := newWebhookCustomer(customer)
+		wrapper := newWebhookCustomer(customer, nil)
 		
 		jsonBytes, err := json.Marshal(wrapper)
 		require.NoError(t, err)
@@ -441,7 +441,7 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 			Object: "checkout.session",
 			Status: ptrTo(api.CheckoutSessionStatusComplete),
 		}
-		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session)))
+		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session, nil)))
 
 		_, err := service.DeliverEvent(webhook.Id, event)
 		require.NoError(t, err)
@@ -468,7 +468,7 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 			Object: "customer",
 			Email:  ptrTo("test@example.com"),
 		}
-		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer)))
+		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer, nil)))
 
 		_, err := service.DeliverEvent(webhook.Id, event)
 		require.NoError(t, err)

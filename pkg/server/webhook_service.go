@@ -266,6 +266,12 @@ func buildWebhookEvent(eventType stripe.EventType, resourceJSON []byte) *stripe.
 	seq := eventSequence.Add(1)
 	created := time.Now().Unix() + seq
 
+	// Parse the resource JSON into a map for Data.Object (fat events)
+	var obj map[string]any
+	if err := json.Unmarshal(resourceJSON, &obj); err != nil {
+		obj = map[string]any{}
+	}
+
 	return &stripe.Event{
 		ID:         fmt.Sprintf("%s%d", eventIdPrefix, created),
 		Type:       eventType,
@@ -274,7 +280,7 @@ func buildWebhookEvent(eventType stripe.EventType, resourceJSON []byte) *stripe.
 		Created:    created,
 		Data: &stripe.EventData{
 			Raw:    resourceJSON,
-			Object: map[string]any{},
+			Object: obj,
 		},
 	}
 }

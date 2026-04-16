@@ -199,7 +199,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 	}
 
 	// Event 1: subscription.created (status: incomplete)
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionCreated, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionCreated, newWebhookSubscription(subscription, s.gateway))
 
 	// Create a draft invoice for the subscription
 	invoiceId := "in_" + generator.RandomString(14)
@@ -220,7 +220,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		s.zap().Error("Failed to create invoice for subscription lifecycle", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 3: invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
@@ -229,7 +229,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		s.zap().Error("Failed to update invoice status", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 4: charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
@@ -247,7 +247,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
+	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge, s.gateway))
 
 	// Event 5: invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
@@ -256,7 +256,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 6: subscription.updated (status: active)
 	subscription.Status = api.SubscriptionStatusActive
@@ -264,7 +264,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		s.zap().Error("Failed to update subscription status", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
 }
 
 // triggerSubscriptionRenewal triggers the 5-event renewal waterfall
@@ -303,7 +303,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		s.zap().Error("Failed to create invoice for renewal", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 2: invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
@@ -315,7 +315,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		s.zap().Error("Failed to update invoice status", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 3: charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
@@ -335,7 +335,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
+	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge, s.gateway))
 
 	// Event 4: invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
@@ -344,11 +344,11 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Event 5: customer.subscription.updated (current_period_end advanced)
 	// Subscription already updated in RenewSubscription gateway method
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
 }
 
 // registerWebhookRoutes registers webhook endpoint routes
@@ -622,7 +622,7 @@ func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reas
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create invoice: %w", err)
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Finalize invoice
 	openStatus := api.InvoiceStatusOpen
@@ -630,7 +630,7 @@ func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reas
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
 		return nil, nil, fmt.Errorf("failed to finalize invoice: %w", err)
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// Create charge
 	chargeId := "ch_" + generator.RandomString(14)
@@ -647,7 +647,7 @@ func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reas
 	if _, err := s.gateway.CreateCharge(charge); err != nil {
 		return nil, nil, fmt.Errorf("failed to create charge: %w", err)
 	}
-	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge))
+	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge, s.gateway))
 
 	// Mark invoice paid
 	paidStatus := api.InvoiceStatusPaid
@@ -655,36 +655,36 @@ func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reas
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
 		return nil, nil, fmt.Errorf("failed to mark invoice paid: %w", err)
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
 
 	return createdInvoice, charge, nil
 }
 
 // triggerSubscriptionUpdate triggers subscription.updated webhook event
 func (s *Server) triggerSubscriptionUpdate(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
 }
 
 // triggerSubscriptionDeleted triggers subscription.deleted webhook event
 func (s *Server) triggerSubscriptionDeleted(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionDeleted, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionDeleted, newWebhookSubscription(subscription, s.gateway))
 }
 
 // triggerSubscriptionPaused triggers subscription.paused webhook event
 func (s *Server) triggerSubscriptionPaused(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionPaused, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionPaused, newWebhookSubscription(subscription, s.gateway))
 }
 
 // triggerSubscriptionResumed triggers subscription.resumed webhook event
 func (s *Server) triggerSubscriptionResumed(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionResumed, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionResumed, newWebhookSubscription(subscription, s.gateway))
 }
 
 // triggerPlanChangeWithInvoice triggers the webhook cascade for plan change with immediate invoicing
 // Events: subscription.updated → invoice.created → invoice.finalized → charge.succeeded → invoice.paid
 func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, proration *gateway.ProrationResult) {
 	// 1. subscription.updated
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
+	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
 
 	// Skip if no proration amount
 	if proration == nil || proration.CreditDue.IsZero() {
@@ -711,7 +711,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 		s.zap().Error("Failed to create invoice for plan change", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// 3. invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
@@ -720,7 +720,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 		s.zap().Error("Failed to finalize invoice", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
 
 	// 4. charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
@@ -737,7 +737,7 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge))
+	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge, s.gateway))
 
 	// 5. invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
@@ -746,5 +746,5 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
 		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
+	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
 }
