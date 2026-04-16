@@ -287,6 +287,21 @@ func (r *InMemoryRepository[T]) extractPrefixFromType() string {
 		"Subscription":     "sub",
 		"WebhookEndpoint":  "we",
 		"Event":            "evt",
+		// Also handle fully qualified type names from api package
+		"api.Charge":           "ch",
+		"api.Customer":         "cus",
+		"api.Invoice":          "in",
+		"api.Payment":          "pay",
+		"api.Refund":           "re",
+		"api.Card":             "card",
+		"api.Account":          "acct",
+		"api.Balance":          "bal",
+		"api.Product":          "prod",
+		"api.Price":            "prc",
+		"api.CheckoutSession":  "cs",
+		"api.Subscription":     "sub",
+		"api.WebhookEndpoint":  "we",
+		"api.Event":            "evt",
 	}
 
 	if prefix, ok := prefixMap[typename]; ok {

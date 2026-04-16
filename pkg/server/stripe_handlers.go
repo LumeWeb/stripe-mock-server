@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stripe/stripe-go/v85"
+	"go.uber.org/zap"
 	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
 	"go.lumeweb.com/stripe-mock-server/pkg/generator"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
@@ -154,16 +155,46 @@ func (s *Server) handleRetrieveCheckoutSession(r *http.Request, pathParams map[s
 
 func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
 	id := pathParams["id"]
-	
+
 	// Complete the checkout session
 	updated, err := s.gateway.CompleteCheckoutSession(id)
 	if err != nil {
 		return http.StatusBadRequest, nil, err
 	}
-	
-	// Trigger webhook asynchronously
+
+	// Trigger checkout.session.completed webhook asynchronously
 	go s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated, s.gateway))
-	
+
+	// For subscription-mode checkouts, fire invoice.paid to activate the subscription
+	// This follows Stripe's actual behavior where invoice.paid follows checkout completion
+	if updated.Mode == api.CheckoutSessionModeEnumSubscription {
+		if updated.Subscription == nil {
+			s.zap().Warn("checkout session completed but subscription is nil",
+				zap.String("session_id", updated.Id))
+			return http.StatusOK, updated, nil
+		}
+
+		subID, err := updated.Subscription.AsCheckoutSessionSubscription0()
+		if err != nil {
+			s.zap().Error("failed to extract subscription ID from checkout session",
+				zap.String("session_id", updated.Id),
+				zap.Error(err))
+			return http.StatusOK, updated, nil
+		}
+		if subID == "" {
+			s.zap().Warn("checkout session has empty subscription ID",
+				zap.String("session_id", updated.Id))
+			return http.StatusOK, updated, nil
+		}
+
+		// Fire invoice.paid asynchronously
+		go func() {
+			// Small delay to ensure checkout.session.completed is processed first
+			time.Sleep(100 * time.Millisecond)
+			s.triggerInvoicePaidForSubscription(subID, api.InvoiceBillingReasonEnumSubscriptionCreate)
+		}()
+	}
+
 	return http.StatusOK, updated, nil
 }
 
@@ -550,8 +581,9 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 		return http.StatusBadRequest, nil, err
 	}
 
-	// Track if we made any changes
-	var updated bool
+	// Track if we need to fire subscription.updated webhook
+	// (items update fires it via triggerSubscriptionPlanChange)
+	var needsWebhook bool
 
 	// Handle cancel_at_period_end flag
 	if cancelAtPeriodEnd, ok := data["cancel_at_period_end"]; ok {
@@ -562,7 +594,7 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 				if err != nil {
 					return http.StatusBadRequest, nil, err
 				}
-				updated = true
+				needsWebhook = true
 			} else if !val && sub.CancelAtPeriodEnd {
 				// Cancel scheduled cancellation
 				sub.CancelAtPeriodEnd = false
@@ -570,12 +602,12 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 					return http.StatusBadRequest, nil, err
 				}
 				sub, _ = s.gateway.GetSubscription(id)
-				updated = true
+				needsWebhook = true
 			}
 		}
 	}
 
-	// Handle items update
+	// Handle items update (plan change)
 	items := GetMapSlice(data, "items")
 	if len(items) > 0 {
 		// Build update list
@@ -610,21 +642,21 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 			return http.StatusBadRequest, nil, err
 		}
 
-		// Handle proration invoicing
-		if prorationBehavior == "always_invoice" && prorationResult != nil {
-			go s.triggerPlanChangeWithInvoice(sub, prorationResult)
-		} else {
-			updated = true
-		}
+		// Trigger plan change webhooks asynchronously (fires subscription.updated)
+		go s.triggerSubscriptionPlanChange(sub, prorationResult, prorationBehavior)
+		// Already fired webhook, don't fire again at end
+		needsWebhook = false
 	}
 
 	// If no changes made, just return the subscription
-	if !updated {
+	if !needsWebhook && len(items) == 0 {
 		return http.StatusOK, sub, nil
 	}
 
-	// Trigger subscription.updated webhook
-	go s.triggerSubscriptionUpdate(sub)
+	// Trigger subscription.updated webhook (only for cancel_at_period_end changes)
+	if needsWebhook {
+		go s.triggerSubscriptionUpdate(sub)
+	}
 
 	return http.StatusOK, sub, nil
 }

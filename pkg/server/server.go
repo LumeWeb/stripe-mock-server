@@ -596,155 +596,226 @@ func retrieve[T any](getFunc func(id string) (*T, error), id string) (int, *T, e
 	return http.StatusOK, resource, nil
 }
 
-// createInvoiceChargeSequence creates an invoice and charge sequence for webhook delivery
-// Returns the created invoice and charge, or error
-func (s *Server) createInvoiceChargeSequence(amount int64, currency string, reason *api.InvoiceBillingReasonEnum) (*api.Invoice, *api.Charge, error) {
-	now := int(time.Now().Unix())
-	invoiceId := "in_" + generator.RandomString(14)
+// triggerInvoicePaidForSubscription fires invoice.paid event for a subscription.
+// This is used by checkout completion to activate subscriptions in the portal.
+// The invoice is created with subscription ID in lines so portal can look up the subscriber.
+func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billingReason api.InvoiceBillingReasonEnum) {
+	subscription, err := s.gateway.GetSubscription(subscriptionID)
+	if err != nil {
+		s.zap().Error("Failed to fetch subscription for invoice.paid", zap.Error(err))
+		return
+	}
 
-	// Create draft invoice
-	draftStatus := api.InvoiceStatusDraft
-	draftAmount := int(amount)
+	// Get customer and amount from subscription
+	customerID, _ := subscription.Customer.AsSubscriptionCustomer0()
+	amount := 1000 // default
+	currency := "usd"
+	if len(subscription.Items.Data) > 0 {
+		if subscription.Items.Data[0].Price.UnitAmount != nil {
+			amount = *subscription.Items.Data[0].Price.UnitAmount
+		}
+		currency = subscription.Items.Data[0].Price.Currency
+	}
+
+	// Create paid invoice linked to subscription
+	now := int(time.Now().Unix())
+	paidStatus := api.InvoiceStatusPaid
 	invoice := &api.Invoice{
-		Id:        invoiceId,
-		Object:    api.InvoiceObjectEnumInvoice,
-		Status:    &draftStatus,
-		AmountDue: draftAmount,
-		Currency:  currency,
-		Created:   now,
-		Livemode:  false,
+		Id:            "in_" + generator.RandomString(14),
+		Object:        api.InvoiceObjectEnumInvoice,
+		Status:        &paidStatus,
+		AmountDue:     amount,
+		AmountPaid:    amount,
+		Currency:      currency,
+		Created:       now,
+		Livemode:      false,
+		BillingReason: &billingReason,
 	}
-	if reason != nil {
-		invoice.BillingReason = reason
+
+	if customerID != "" {
+		var custUnion api.Invoice_Customer
+		_ = custUnion.FromInvoiceCustomer0(customerID)
+		invoice.Customer = custUnion
 	}
+
+	// Add subscription to invoice lines (portal uses this to find subscriber)
+	lineItem := api.LineItem{
+		Id:           "il_" + generator.RandomString(14),
+		Object:       api.LineItemObjectEnum("line_item"),
+		Amount:       amount,
+		Currency:     currency,
+		Description:  &[]string{"Subscription"}[0],
+		Discountable: false,
+		Livemode:     false,
+		Metadata:     map[string]string{},
+		Period: api.InvoiceLineItemPeriod{
+			Start: now,
+			End:   now + 2592000,
+		},
+		Subtotal: amount,
+	}
+	lineItem.Subscription = &api.LineItem_Subscription{}
+	_ = lineItem.Subscription.FromLineItemSubscription0(subscriptionID)
+
+	invoice.Lines.Data = []api.LineItem{lineItem}
+	invoice.Lines.Object = api.InvoiceLinesObject("list")
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create invoice: %w", err)
+		s.zap().Error("Failed to create invoice for subscription", zap.Error(err))
+		return
 	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
-	// Finalize invoice
-	openStatus := api.InvoiceStatusOpen
-	createdInvoice.Status = &openStatus
-	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		return nil, nil, fmt.Errorf("failed to finalize invoice: %w", err)
-	}
-	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
-
-	// Create charge
-	chargeId := "ch_" + generator.RandomString(14)
-	amountInt := int(amount)
-	charge := &api.Charge{
-		Id:       chargeId,
-		Object:   api.ChargeObjectEnumCharge,
-		Amount:   amountInt,
-		Currency: currency,
-		Status:   api.ChargeStatusSucceeded,
-		Created:  now,
-		Livemode: false,
-	}
-	if _, err := s.gateway.CreateCharge(charge); err != nil {
-		return nil, nil, fmt.Errorf("failed to create charge: %w", err)
-	}
-	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge, s.gateway))
-
-	// Mark invoice paid
-	paidStatus := api.InvoiceStatusPaid
-	createdInvoice.Status = &paidStatus
-	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
-		return nil, nil, fmt.Errorf("failed to mark invoice paid: %w", err)
-	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
-
-	return createdInvoice, charge, nil
 }
 
 // triggerSubscriptionUpdate triggers subscription.updated webhook event
 func (s *Server) triggerSubscriptionUpdate(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
+	s.triggerSubscriptionEvent(stripe.EventTypeCustomerSubscriptionUpdated, subscription)
 }
 
 // triggerSubscriptionDeleted triggers subscription.deleted webhook event
 func (s *Server) triggerSubscriptionDeleted(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionDeleted, newWebhookSubscription(subscription, s.gateway))
+	s.triggerSubscriptionEvent(stripe.EventTypeCustomerSubscriptionDeleted, subscription)
 }
 
 // triggerSubscriptionPaused triggers subscription.paused webhook event
 func (s *Server) triggerSubscriptionPaused(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionPaused, newWebhookSubscription(subscription, s.gateway))
+	s.triggerSubscriptionEvent(stripe.EventTypeCustomerSubscriptionPaused, subscription)
 }
 
 // triggerSubscriptionResumed triggers subscription.resumed webhook event
 func (s *Server) triggerSubscriptionResumed(subscription *api.Subscription) {
-	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionResumed, newWebhookSubscription(subscription, s.gateway))
+	s.triggerSubscriptionEvent(stripe.EventTypeCustomerSubscriptionResumed, subscription)
 }
 
-// triggerPlanChangeWithInvoice triggers the webhook cascade for plan change with immediate invoicing
-// Events: subscription.updated → invoice.created → invoice.finalized → charge.succeeded → invoice.paid
-func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, proration *gateway.ProrationResult) {
-	// 1. subscription.updated
+// triggerSubscriptionEvent is a helper for subscription webhook events
+func (s *Server) triggerSubscriptionEvent(eventType stripe.EventType, subscription *api.Subscription) {
+	s.triggerWebhookEvent(eventType, newWebhookSubscription(subscription, s.gateway))
+}
+
+// triggerSubscriptionPlanChange handles webhook waterfall for subscription plan changes.
+// This unified helper handles all proration behaviors:
+//   - none: only fires subscription.updated
+//   - create_prorations: fires subscription.updated → invoice.paid
+//   - always_invoice: fires subscription.updated → invoice.created → invoice.finalized → charge.succeeded → invoice.paid
+func (s *Server) triggerSubscriptionPlanChange(
+	subscription *api.Subscription,
+	proration *gateway.ProrationResult,
+	prorationBehavior string,
+) {
+	// 1. Always fire subscription.updated first
 	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription, s.gateway))
+
+	// 2. Handle proration invoicing based on behavior
+	if prorationBehavior == "none" {
+		return
+	}
 
 	// Skip if no proration amount
 	if proration == nil || proration.CreditDue.IsZero() {
 		return
 	}
 
-	now := int(time.Now().Unix())
-	invoiceId := "in_" + generator.RandomString(14)
+	// For create_prorations, fire simplified invoice.paid (portal only needs this)
+	// For always_invoice, fire full invoice waterfall
+	if prorationBehavior == "create_prorations" {
+		s.triggerInvoicePaidForSubscription(subscription.Id, api.InvoiceBillingReasonEnumSubscriptionUpdate)
+	} else if prorationBehavior == "always_invoice" {
+		s.triggerInvoiceWaterfall(int(proration.CreditDue.IntPart()), "usd", subscription, nil)
+	}
+}
 
-	// 2. invoice.created (status: draft)
+// triggerInvoiceWaterfall fires the full invoice waterfall: invoice.created → invoice.finalized → charge.succeeded → invoice.paid
+// If subscription is provided, it's added to invoice lines for portal lookup.
+func (s *Server) triggerInvoiceWaterfall(amount int, currency string, subscription *api.Subscription, billingReason *api.InvoiceBillingReasonEnum) *api.Invoice {
+	now := int(time.Now().Unix())
+
+	// 1. invoice.created (status: draft)
 	draftStatus := api.InvoiceStatusDraft
 	invoice := &api.Invoice{
-		Id:        invoiceId,
+		Id:        "in_" + generator.RandomString(14),
 		Object:    api.InvoiceObjectEnumInvoice,
 		Status:    &draftStatus,
-		AmountDue: int(proration.CreditDue.IntPart()),
-		Currency:  "usd",
+		AmountDue: amount,
+		Currency:  currency,
 		Created:   now,
 		Livemode:  false,
+	}
+	if billingReason != nil {
+		invoice.BillingReason = billingReason
+	}
+
+	// Add customer and subscription to invoice
+	if subscription != nil {
+		if customerID, err := subscription.Customer.AsSubscriptionCustomer0(); err == nil && customerID != "" {
+			var custUnion api.Invoice_Customer
+			_ = custUnion.FromInvoiceCustomer0(customerID)
+			invoice.Customer = custUnion
+		}
+
+		// Add subscription to invoice lines (portal uses this to find subscriber)
+		invoice.Lines.Data = []api.LineItem{
+			{
+				Id:           "il_" + generator.RandomString(14),
+				Object:       api.LineItemObjectEnum("line_item"),
+				Amount:       amount,
+				Currency:     currency,
+				Description:  new("Subscription"),
+				Discountable: false,
+				Livemode:     false,
+				Metadata:     map[string]string{},
+				Period: api.InvoiceLineItemPeriod{
+					Start: now,
+					End:   now + 2592000,
+				},
+				Subtotal: amount,
+			},
+		}
+		invoice.Lines.Data[0].Subscription = &api.LineItem_Subscription{}
+		_ = invoice.Lines.Data[0].Subscription.FromLineItemSubscription0(subscription.Id)
 	}
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
-		s.zap().Error("Failed to create invoice for plan change", zap.Error(err))
-		return
+		s.zap().Error("Failed to create invoice", zap.Error(err))
+		return nil
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice, s.gateway))
 
-	// 3. invoice.finalized (status: open)
+	// 2. invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
 	createdInvoice.Status = &openStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
 		s.zap().Error("Failed to finalize invoice", zap.Error(err))
-		return
+		return nil
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice, s.gateway))
 
-	// 4. charge.succeeded
-	chargeId := "ch_" + generator.RandomString(14)
+	// 3. charge.succeeded
 	charge := &api.Charge{
-		Id:       chargeId,
+		Id:       "ch_" + generator.RandomString(14),
 		Object:   api.ChargeObjectEnumCharge,
-		Amount:   int(proration.CreditDue.IntPart()),
-		Currency: "usd",
+		Amount:   amount,
+		Currency: currency,
 		Status:   api.ChargeStatusSucceeded,
 		Created:  now,
 		Livemode: false,
 	}
 	if _, err := s.gateway.CreateCharge(charge); err != nil {
 		s.zap().Error("Failed to create charge", zap.Error(err))
-		return
+		return nil
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(charge, s.gateway))
 
-	// 5. invoice.paid (status: paid)
+	// 4. invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
 		s.zap().Error("Failed to mark invoice paid", zap.Error(err))
-		return
+		return nil
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice, s.gateway))
+
+	return createdInvoice
 }
