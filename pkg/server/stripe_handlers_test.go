@@ -2072,7 +2072,7 @@ func TestPlanChangeWebhookWaterfall(t *testing.T) {
 
 // TestExpandSubscription tests expand parameter support
 func TestExpandSubscription(t *testing.T) {
-	t.Run("Expand items.data.price.product", func(t *testing.T) {
+	t.Run("Expand items.data.price.product includes price metadata", func(t *testing.T) {
 		s := setupTestServer(t, false)
 
 		// Create a product
@@ -2086,11 +2086,12 @@ func TestExpandSubscription(t *testing.T) {
 		require.NoError(t, err)
 		productID := createdProduct.Id
 
-		// Create a price with this product
+		// Create a price with this product and metadata (period_id)
 		price := &api.Price{
 			Object:   api.PriceObjectEnumPrice,
 			Livemode: false,
 			Currency: "usd",
+			Metadata: map[string]string{"period_id": "456"},
 		}
 		price.Product.FromProduct(*createdProduct)
 		createdPrice, err := s.gateway.CreatePrice(price)
@@ -2099,9 +2100,6 @@ func TestExpandSubscription(t *testing.T) {
 
 		// Create a subscription with this price
 		sub := createTestSubscription(s.gateway, "cus_test", priceID)
-		// Update the subscription's price to have the full product reference
-		sub.Items.Data[0].Price = *createdPrice
-		s.gateway.UpdateSubscription(sub.Id, sub)
 
 		// Create request with expand parameter
 		req := httptest.NewRequest("GET", "/v1/subscriptions/"+sub.Id+"?expand[]=items.data.price.product", nil)
@@ -2114,12 +2112,50 @@ func TestExpandSubscription(t *testing.T) {
 		retrieved := result.(*api.Subscription)
 		assert.Len(t, retrieved.Items.Data, 1)
 
+		// Verify price metadata is populated (this is the fix for period_id not being found)
+		assert.Equal(t, priceID, retrieved.Items.Data[0].Price.Id)
+		assert.Equal(t, "456", retrieved.Items.Data[0].Price.Metadata["period_id"], "price metadata should be populated from storage")
+
 		// Verify product is expanded (not just an ID string)
 		expandedProduct, err := retrieved.Items.Data[0].Price.Product.AsProduct()
 		require.NoError(t, err)
 		assert.Equal(t, productID, expandedProduct.Id)
 		assert.Equal(t, "Test Product", expandedProduct.Name)
 		assert.Equal(t, "plan_123", expandedProduct.Metadata["plan_id"])
+	})
+
+	t.Run("Expand items.data.price includes metadata", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create a price with metadata
+		price := &api.Price{
+			Object:   api.PriceObjectEnumPrice,
+			Livemode: false,
+			Currency: "usd",
+			Metadata: map[string]string{"period_id": "789", "custom_key": "custom_value"},
+		}
+		createdPrice, err := s.gateway.CreatePrice(price)
+		require.NoError(t, err)
+		priceID := createdPrice.Id
+
+		// Create a subscription with this price
+		sub := createTestSubscription(s.gateway, "cus_test", priceID)
+
+		// Create request with expand parameter for price only
+		req := httptest.NewRequest("GET", "/v1/subscriptions/"+sub.Id+"?expand[]=items.data.price", nil)
+		pathParams := map[string]string{"id": sub.Id}
+
+		status, result, err := s.handleRetrieveSubscription(req, pathParams, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		retrieved := result.(*api.Subscription)
+		assert.Len(t, retrieved.Items.Data, 1)
+
+		// Verify price metadata is populated
+		assert.Equal(t, priceID, retrieved.Items.Data[0].Price.Id)
+		assert.Equal(t, "789", retrieved.Items.Data[0].Price.Metadata["period_id"], "price metadata should be populated from storage")
+		assert.Equal(t, "custom_value", retrieved.Items.Data[0].Price.Metadata["custom_key"])
 	})
 
 	t.Run("Expand customer", func(t *testing.T) {
