@@ -44,15 +44,7 @@ func (e *CheckoutSessionExpander) expandCustomer(gw *gateway.Gateway) {
 	// Fetch the full customer
 	customer, err := gw.GetCustomer(id)
 	if err != nil {
-		// Create a minimal customer if not found
-		m := map[string]string{}
-		customer = &api.Customer{
-			Id:       id,
-			Object:   api.CustomerObjectEnumCustomer,
-			Created:  int(time.Now().Unix()),
-			Livemode: false,
-			Metadata: &m,
-		}
+		customer = createMinimalCustomer(id)
 	}
 
 	// Set expanded customer

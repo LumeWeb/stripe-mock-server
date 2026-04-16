@@ -1,9 +1,23 @@
 package expander
 
 import (
+	"time"
+
 	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
+
+// createMinimalCustomer creates a fallback customer object when gateway lookup fails
+func createMinimalCustomer(id string) *api.Customer {
+	m := map[string]string{}
+	return &api.Customer{
+		Id:       id,
+		Object:   api.CustomerObjectEnumCustomer,
+		Created:  int(time.Now().Unix()),
+		Livemode: false,
+		Metadata: &m,
+	}
+}
 
 // ResourceExpander is the interface for resources that can expand their related objects
 type ResourceExpander interface {
