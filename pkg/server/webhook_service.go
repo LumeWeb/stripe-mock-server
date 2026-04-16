@@ -41,6 +41,11 @@ type WebhookService struct {
 	apiVersion string
 }
 
+// Gateway returns the gateway used by the webhook service (for testing)
+func (s *WebhookService) Gateway() *gateway.Gateway {
+	return s.gateway
+}
+
 // WebhookDeliveryTask represents a webhook delivery job
 type WebhookDeliveryTask struct {
 	webhookId string

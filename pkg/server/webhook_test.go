@@ -439,7 +439,7 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		session := &api.CheckoutSession{
 			Id:     "cs_test_data_check",
 			Object: "checkout.session",
-			Status: ptrTo(api.CheckoutSessionStatusComplete),
+			Status: new(api.CheckoutSessionStatusComplete),
 		}
 		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session, nil)))
 
@@ -466,7 +466,7 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		customer := &api.Customer{
 			Id:     "cus_test_data_check",
 			Object: "customer",
-			Email:  ptrTo("test@example.com"),
+			Email:  new("test@example.com"),
 		}
 		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer, nil)))
 
@@ -485,9 +485,66 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		assert.Equal(t, "cus_test_data_check", objMap["id"], "data.object.id should be set")
 		assert.Equal(t, "customer", objMap["object"], "data.object.object should be set")
 	})
+
+	// Test that related objects are expanded
+	t.Run("checkout.session.completed has expanded subscription", func(t *testing.T) {
+		receivedPayloads = nil
+
+		// Create a subscription in the gateway
+		sub := &api.Subscription{
+			Id:     "sub_expanded_test",
+			Object: api.SubscriptionObjectEnumSubscription,
+			Status: api.SubscriptionStatusActive,
+		}
+		gw := service.Gateway()
+		_, err := gw.CreateSubscription(sub)
+		require.NoError(t, err)
+
+		// Create a checkout session with subscription as ID string (not expanded)
+		var subUnion api.CheckoutSession_Subscription
+		err = subUnion.FromCheckoutSessionSubscription0("sub_expanded_test")
+		require.NoError(t, err)
+
+		session := &api.CheckoutSession{
+			Id:           "cs_expanded_test",
+			Object:       api.CheckoutSessionObjectEnumCheckoutSession,
+			Status:       new(api.CheckoutSessionStatusComplete),
+			Subscription: &subUnion,
+		}
+
+		// Create webhook wrapper with gateway (this triggers expansion during marshal)
+		wrapper := newWebhookCheckoutSession(session, gw)
+
+		// Marshal to trigger expansion
+		jsonBytes, err := json.Marshal(wrapper)
+		require.NoError(t, err)
+
+		// Build the webhook event
+		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, jsonBytes)
+
+		_, err = service.DeliverEvent(webhook.Id, event)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		payloadsMutex.Lock()
+		defer payloadsMutex.Unlock()
+		require.Len(t, receivedPayloads, 1)
+
+		// Verify the data.object contains expanded subscription
+		dataObj := receivedPayloads[0]["data"].(map[string]any)["object"]
+		objMap, ok := dataObj.(map[string]any)
+		require.True(t, ok, "data.object should be a map")
+
+		// Verify subscription is expanded (object, not string ID)
+		subField := objMap["subscription"]
+		subMap, ok := subField.(map[string]any)
+		require.True(t, ok, "subscription should be an expanded object, not a string ID")
+		assert.Equal(t, "sub_expanded_test", subMap["id"], "subscription.id should match")
+		assert.Equal(t, "subscription", subMap["object"], "subscription.object should be set")
+	})
 }
 
-func ptrTo[T any](v T) *T { return &v }
 
 func mustMarshal(v interface{}) []byte {
 	b, err := json.Marshal(v)
