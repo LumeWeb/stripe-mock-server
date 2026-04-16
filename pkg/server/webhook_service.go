@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/gammazero/workerpool"
 	"github.com/stripe/stripe-go/v85"
 	"github.com/stripe/stripe-go/v85/webhook"
+	"go.uber.org/zap"
 	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
@@ -144,13 +146,20 @@ func (s *WebhookService) DeleteWebhook(id string) error {
 
 // DeliverEvent queues a webhook event for delivery
 func (s *WebhookService) DeliverEvent(webhookId string, event *stripe.Event) (*DeliverResult, error) {
+	zap.L().Debug("DeliverEvent",
+		zap.String("webhook_id", webhookId),
+		zap.String("event_type", string(event.Type)),
+		zap.String("event_id", event.ID),
+	)
 	// Validate webhook exists and is enabled
 	w, err := s.gateway.GetWebhookEndpoint(webhookId)
 	if err != nil {
+		zap.L().Debug("DeliverEvent: webhook not found", zap.String("webhook_id", webhookId), zap.Error(err))
 		return nil, fmt.Errorf("webhook not found: %w", err)
 	}
 
 	if w.Status != WebhookStatusEnabled {
+		zap.L().Debug("DeliverEvent: webhook not enabled", zap.String("webhook_id", webhookId), zap.String("status", w.Status))
 		return nil, fmt.Errorf("webhook is not enabled")
 	}
 
@@ -181,13 +190,29 @@ func (s *WebhookService) DeliverEvent(webhookId string, event *stripe.Event) (*D
 // isEventEnabled checks if an event type is enabled for a webhook
 func (s *WebhookService) isEventEnabled(w *api.WebhookEndpoint, eventType stripe.EventType) bool {
 	if len(w.EnabledEvents) == 0 || w.EnabledEvents[0] == "*" {
+		zap.L().Debug("isEventEnabled: wildcard or no enabled_events",
+			zap.String("webhook_id", w.Id),
+			zap.String("event_type", string(eventType)),
+			zap.Bool("enabled", true),
+		)
 		return true
 	}
+	event := string(eventType)
 	for _, enabled := range w.EnabledEvents {
-		if enabled == string(eventType) {
+		if strings.Contains(event, enabled) {
+			zap.L().Debug("isEventEnabled: matched",
+				zap.String("webhook_id", w.Id),
+				zap.String("event_type", string(eventType)),
+				zap.String("enabled_pattern", enabled),
+			)
 			return true
 		}
 	}
+	zap.L().Debug("isEventEnabled: not matched",
+		zap.String("webhook_id", w.Id),
+		zap.String("event_type", string(eventType)),
+		zap.Strings("enabled_events", w.EnabledEvents),
+	)
 	return false
 }
 

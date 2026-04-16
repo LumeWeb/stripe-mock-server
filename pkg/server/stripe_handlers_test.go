@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -701,6 +703,112 @@ func TestCheckoutSessionHandlers(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, status)
 		assert.Error(t, err)
 	})
+}
+
+// TestCheckoutSessionToSubscriptionWithPriceMetadata tests that subscription items
+// created during checkout completion have proper price data including metadata
+func TestCheckoutSessionToSubscriptionWithPriceMetadata(t *testing.T) {
+	s := setupTestServer(t, false)
+	wc := SetupWebhookCapture(t, s)
+	defer wc.Close()
+
+	// Step 1: Create a product
+	productData := map[string]any{
+		"name": "Test Subscription Product",
+	}
+	_, productResult, err := s.handleCreateProduct(nil, nil, productData)
+	require.NoError(t, err)
+	product := productResult.(*api.Product)
+
+	// Step 2: Create a price with recurring interval and metadata (period_id)
+	priceData := map[string]any{
+		"currency":    "usd",
+		"unit_amount": 1999,
+		"product":     product.Id,
+		"recurring": map[string]any{
+			"interval":       "month",
+			"interval_count": 1,
+		},
+		"metadata": map[string]any{
+			"period_id": "42",
+			"plan":     "standard",
+		},
+	}
+	status, priceResult, err := s.handleCreatePrice(nil, nil, priceData)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	price := priceResult.(*api.Price)
+	require.Equal(t, "42", price.Metadata["period_id"])
+	require.Equal(t, "standard", price.Metadata["plan"])
+
+	// Step 3: Create a customer
+	customerData := map[string]any{
+		"name":  "Test Customer",
+		"email": "test@example.com",
+	}
+	_, customerResult, err := s.handleCreateCustomer(nil, nil, customerData)
+	require.NoError(t, err)
+	customer := customerResult.(*api.Customer)
+
+	// Step 4: Create a checkout session with subscription mode
+	sessionData := map[string]any{
+		"mode":        "subscription",
+		"success_url": "https://example.com/success",
+		"cancel_url":  "https://example.com/cancel",
+		"customer":    customer.Id,
+		"line_items": []map[string]any{
+			{
+				"price":    price.Id,
+				"quantity": 1,
+			},
+		},
+	}
+	status, sessionResult, err := s.handleCreateCheckoutSession(nil, nil, sessionData)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	session := sessionResult.(*api.CheckoutSession)
+	require.Equal(t, api.CheckoutSessionModeEnumSubscription, session.Mode)
+
+	// Step 5: Complete the checkout session
+	status, result, err := s.handleCompleteCheckoutSession(nil, map[string]string{"id": session.Id}, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	completed := result.(*api.CheckoutSession)
+	require.Equal(t, api.CheckoutSessionStatusComplete, *completed.Status)
+
+	// Step 6: Extract subscription ID from completed session
+	require.NotNil(t, completed.Subscription, "subscription should be created")
+	subID, err := completed.Subscription.AsCheckoutSessionSubscription0()
+	require.NoError(t, err)
+	require.NotEmpty(t, subID)
+
+	// Step 7: Fetch the subscription directly
+	status, subResult, err := s.handleRetrieveSubscription(nil, map[string]string{"id": subID}, nil)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, status)
+	subscription := subResult.(*api.Subscription)
+
+	// Step 8: Verify subscription has items with price data
+	require.NotNil(t, subscription.Items, "subscription should have items")
+	require.NotEmpty(t, subscription.Items.Data, "subscription should have item data")
+	assert.Equal(t, 1, len(subscription.Items.Data), "should have exactly one subscription item")
+
+	// Step 9: Verify the subscription item has price metadata
+	subItem := subscription.Items.Data[0]
+	assert.Equal(t, price.Id, subItem.Price.Id, "price ID should match")
+	assert.Equal(t, "42", subItem.Price.Metadata["period_id"], "price should have period_id metadata")
+	assert.Equal(t, "standard", subItem.Price.Metadata["plan"], "price should have plan metadata")
+
+	// Step 10: Verify period dates were calculated (not zero/epoch)
+	assert.NotZero(t, subItem.CurrentPeriodStart, "period start should not be zero")
+	assert.NotZero(t, subItem.CurrentPeriodEnd, "period end should not be zero")
+	assert.Greater(t, subItem.CurrentPeriodEnd, subItem.CurrentPeriodStart, "period end should be after start")
+
+	// Step 11: Verify webhook events
+	time.Sleep(500 * time.Millisecond)
+	eventTypes := wc.GetEventTypes()
+	assert.Contains(t, eventTypes, "checkout.session.completed")
+	assert.Contains(t, eventTypes, "invoice.paid")
 }
 
 // Test Billing Portal Handlers
@@ -1668,7 +1776,7 @@ func TestTriggerInvoicePaidForSubscription(t *testing.T) {
 	sub := &api.Subscription{
 		Object:   api.SubscriptionObjectEnumSubscription,
 		Status:   api.SubscriptionStatusActive,
-		Livemode: false,
+		Livemode: true,
 	}
 	var custUnion api.Subscription_Customer
 	_ = custUnion.FromSubscriptionCustomer0("cus_test123")
@@ -1801,7 +1909,7 @@ func createTestSubscription(gw *gateway.Gateway, customerID, priceID string) *ap
 		Object:            api.SubscriptionObjectEnumSubscription,
 		Status:            api.SubscriptionStatusActive,
 		Created:           now,
-		Livemode:          false,
+		Livemode:          true,
 		Customer:          cust,
 		CancelAtPeriodEnd: false,
 	}
@@ -2078,7 +2186,7 @@ func TestExpandSubscription(t *testing.T) {
 		// Create a product
 		product := &api.Product{
 			Object:   api.ProductObjectEnumProduct,
-			Livemode: false,
+			Livemode: true,
 			Name:     "Test Product",
 			Metadata: map[string]string{"plan_id": "plan_123"},
 		}
@@ -2089,7 +2197,7 @@ func TestExpandSubscription(t *testing.T) {
 		// Create a price with this product and metadata (period_id)
 		price := &api.Price{
 			Object:   api.PriceObjectEnumPrice,
-			Livemode: false,
+			Livemode: true,
 			Currency: "usd",
 			Metadata: map[string]string{"period_id": "456"},
 		}
@@ -2130,7 +2238,7 @@ func TestExpandSubscription(t *testing.T) {
 		// Create a price with metadata
 		price := &api.Price{
 			Object:   api.PriceObjectEnumPrice,
-			Livemode: false,
+			Livemode: true,
 			Currency: "usd",
 			Metadata: map[string]string{"period_id": "789", "custom_key": "custom_value"},
 		}
@@ -2165,7 +2273,7 @@ func TestExpandSubscription(t *testing.T) {
 		m := map[string]string{}
 		customer := &api.Customer{
 			Object:   api.CustomerObjectEnumCustomer,
-			Livemode: false,
+			Livemode: true,
 			Email:    new("test@example.com"),
 			Metadata: &m,
 		}
@@ -2214,6 +2322,92 @@ func TestExpandSubscription(t *testing.T) {
 		customerID, err := retrieved.Customer.AsSubscriptionCustomer0()
 		require.NoError(t, err)
 		assert.Equal(t, "cus_test", customerID)
+	})
+
+	t.Run("HTTP: Expand items.data.price.product after checkout completion", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Step 1: Create product via handler
+		productData := map[string]any{"name": "Test Plan"}
+		_, productResult, err := s.handleCreateProduct(nil, nil, productData)
+		require.NoError(t, err)
+		product := productResult.(*api.Product)
+
+		// Step 2: Create price with metadata (period_id) via handler
+		priceData := map[string]any{
+			"currency":    "usd",
+			"unit_amount": 1999,
+			"product":     product.Id,
+			"recurring": map[string]any{
+				"interval":       "month",
+				"interval_count": 1,
+			},
+			"metadata": map[string]any{
+				"period_id": "42",
+			},
+		}
+		_, priceResult, err := s.handleCreatePrice(nil, nil, priceData)
+		require.NoError(t, err)
+		price := priceResult.(*api.Price)
+
+		// Step 3: Create customer via handler
+		customerData := map[string]any{"name": "Test Customer", "email": "test@example.com"}
+		_, customerResult, err := s.handleCreateCustomer(nil, nil, customerData)
+		require.NoError(t, err)
+		customer := customerResult.(*api.Customer)
+
+		// Step 4: Create checkout session via HTTP (form-encoded, Rack-style)
+		formBody := "mode=subscription&customer=" + customer.Id +
+			"&line_items[0][price]=" + price.Id +
+			"&line_items[0][quantity]=1" +
+			"&success_url=https%3A%2F%2Fexample.com%2Fsuccess" +
+			"&cancel_url=https%3A%2F%2Fexample.com%2Fcancel"
+		req := httptest.NewRequest(http.MethodPost, "/v1/checkout/sessions", strings.NewReader(formBody))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", "Bearer sk_test_123")
+		rec := httptest.NewRecorder()
+		s.HandleRequest(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var session api.CheckoutSession
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &session))
+		sessionID := session.Id
+
+		// Step 5: Complete checkout session via HTTP
+		req = httptest.NewRequest(http.MethodPost, "/v1/checkout/sessions/"+sessionID+"/complete", nil)
+		req.Header.Set("Authorization", "Bearer sk_test_123")
+		rec = httptest.NewRecorder()
+		s.HandleRequest(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var completed api.CheckoutSession
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &completed))
+		require.NotNil(t, completed.Subscription)
+		subID, err := completed.Subscription.AsCheckoutSessionSubscription0()
+		require.NoError(t, err)
+
+		// Step 6: GET subscription with expand[]=items.data.price.product via HTTP
+		// This is exactly what the portal does after receiving a webhook
+		req = httptest.NewRequest(http.MethodGet, "/v1/subscriptions/"+subID+"?expand[]=items.data.price.product", nil)
+		req.Header.Set("Authorization", "Bearer sk_test_123")
+		rec = httptest.NewRecorder()
+		s.HandleRequest(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+
+		var sub api.Subscription
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &sub))
+
+		// THE BUG: items.data must be populated with price containing metadata
+		require.NotEmpty(t, sub.Items.Data, "subscription items must be populated after expand")
+
+		subItem := sub.Items.Data[0]
+		assert.Equal(t, price.Id, subItem.Price.Id, "price ID must match")
+		assert.Equal(t, "42", subItem.Price.Metadata["period_id"], "price metadata (period_id) must be expanded")
+
+		// Product must be expanded, not just a string ID
+		expandedProduct, err := subItem.Price.Product.AsProduct()
+		require.NoError(t, err, "price.product must be an expanded object, not a string")
+		assert.Equal(t, product.Id, expandedProduct.Id, "product ID must match")
 	})
 }
 

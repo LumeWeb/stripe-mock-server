@@ -6,9 +6,63 @@ import (
 	"log"
 	"time"
 
+	"go.uber.org/zap"
+	"go.lumeweb.com/stripe-mock-server/pkg/generator"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 )
+
+// calculatePeriodDates calculates subscription item period dates based on price recurring interval.
+// Returns (periodStart, periodEnd) based on the price's interval and interval_count.
+// Follows the same logic as portal subscription package's CalculateFirstCycle.
+func calculatePeriodDates(price *api.Price) (periodStart, periodEnd int) {
+	now := int(time.Now().Unix())
+	periodStart = now
+
+	// Default to monthly (30 days) if no recurring information
+	if price == nil || price.Recurring == nil {
+		periodEnd = now + 2592000 // 30 days in seconds
+		return
+	}
+
+	// Get the recurring data
+	var interval api.Price_Recurring
+	interval = *price.Recurring
+	recurringData, err := interval.AsRecurring()
+	if err != nil {
+		// Fallback to monthly on error
+		periodEnd = now + 2592000
+		return
+	}
+
+	// Get interval count, default to 1
+	intervalCount := 1
+	if recurringData.IntervalCount != 0 {
+		intervalCount = recurringData.IntervalCount
+	}
+
+	// Calculate end date based on interval, matching portal subscription package
+	// Cadence.AddTo() behavior
+	nowTime := time.Now()
+	var endTime time.Time
+
+	switch recurringData.Interval {
+	case api.RecurringIntervalDay:
+		endTime = nowTime.AddDate(0, 0, intervalCount)
+	case api.RecurringIntervalWeek:
+		endTime = nowTime.AddDate(0, 0, 7*intervalCount)
+	case api.RecurringIntervalMonth:
+		endTime = nowTime.AddDate(0, intervalCount, 0)
+	case api.RecurringIntervalYear:
+		endTime = nowTime.AddDate(intervalCount, 0, 0)
+	default:
+		// Unknown interval, fallback to monthly
+		endTime = nowTime.AddDate(0, 1, 0)
+	}
+
+	periodEnd = int(endTime.Unix())
+	return
+}
 
 // Gateway provides business logic for Stripe-like operations
 type Gateway struct {
@@ -21,10 +75,12 @@ type Gateway struct {
 	priceRepo        storage.Repository[api.Price]
 	billingConfigRepo storage.Repository[api.BillingPortalConfiguration]
 	webhookRepo      storage.Repository[api.WebhookEndpoint]
+	logger          *zap.Logger
 }
 
 // NewGateway creates a new gateway with typed repositories
 func NewGateway() *Gateway {
+	logger := zap.L().With(zap.String("component", "gateway"))
 	return &Gateway{
 		customerRepo:     storage.NewInMemoryRepository[api.Customer](),
 		subscriptionRepo: storage.NewInMemoryRepository[api.Subscription](),
@@ -35,7 +91,13 @@ func NewGateway() *Gateway {
 		priceRepo:        storage.NewInMemoryRepository[api.Price](),
 		billingConfigRepo: storage.NewInMemoryRepository[api.BillingPortalConfiguration](),
 		webhookRepo:      storage.NewInMemoryRepository[api.WebhookEndpoint](),
+		logger:          logger,
 	}
+}
+
+// SetLogger sets the logger on the gateway
+func (g *Gateway) SetLogger(l *zap.Logger) {
+	g.logger = l.With(zap.String("component", "gateway"))
 }
 
 // SetWebhookRepo sets the webhook repository (for testing)
@@ -115,13 +177,21 @@ func (g *Gateway) CreateCustomer(customer *api.Customer) (*api.Customer, error) 
 	setStandardFields(customer)
 	id, err := g.customerRepo.Create(*customer)
 	if err != nil {
+		g.logger.Error("Failed to create customer", zap.Error(err))
 		return nil, err
 	}
+	g.logger.Debug("Created customer", zap.String("id", id))
 	return g.customerRepo.Get(id)
 }
 
 func (g *Gateway) GetCustomer(id string) (*api.Customer, error) {
-	return g.customerRepo.Get(id)
+	result, err := g.customerRepo.Get(id)
+	if err != nil {
+		g.logger.Debug("Customer not found", zap.String("id", id), zap.Error(err))
+		return nil, err
+	}
+	g.logger.Debug("Retrieved customer", zap.String("id", id))
+	return result, nil
 }
 
 func (g *Gateway) UpdateCustomer(id string, customer *api.Customer) error {
@@ -141,8 +211,10 @@ func (g *Gateway) CreateProduct(product *api.Product) (*api.Product, error) {
 	setStandardFields(product)
 	id, err := g.productRepo.Create(*product)
 	if err != nil {
+		g.logger.Error("Failed to create product", zap.Error(err))
 		return nil, err
 	}
+	g.logger.Debug("Created product", zap.String("id", id), zap.String("name", product.Name))
 	return g.productRepo.Get(id)
 }
 
@@ -152,7 +224,13 @@ func (g *Gateway) UpdateProduct(id string, product *api.Product) error {
 }
 
 func (g *Gateway) GetProduct(id string) (*api.Product, error) {
-	return g.productRepo.Get(id)
+	result, err := g.productRepo.Get(id)
+	if err != nil {
+		g.logger.Debug("Product not found", zap.String("id", id), zap.Error(err))
+		return nil, err
+	}
+	g.logger.Debug("Retrieved product", zap.String("id", id), zap.String("name", result.Name))
+	return result, nil
 }
 
 func (g *Gateway) ListProducts() ([]api.Product, error) {
@@ -168,13 +246,21 @@ func (g *Gateway) CreatePrice(price *api.Price) (*api.Price, error) {
 	setStandardFields(price)
 	id, err := g.priceRepo.Create(*price)
 	if err != nil {
+		g.logger.Error("Failed to create price", zap.Error(err))
 		return nil, err
 	}
+	g.logger.Debug("Created price", zap.String("id", id), zap.String("currency", price.Currency), zap.Any("metadata", price.Metadata))
 	return g.priceRepo.Get(id)
 }
 
 func (g *Gateway) GetPrice(id string) (*api.Price, error) {
-	return g.priceRepo.Get(id)
+	result, err := g.priceRepo.Get(id)
+	if err != nil {
+		g.logger.Debug("Price not found", zap.String("id", id), zap.Error(err))
+		return nil, err
+	}
+	g.logger.Debug("Retrieved price", zap.String("id", id), zap.Any("metadata", result.Metadata))
+	return result, nil
 }
 
 func (g *Gateway) ListPrices() ([]api.Price, error) {
@@ -188,15 +274,45 @@ func (g *Gateway) CreateCheckoutSession(session *api.CheckoutSession) (*api.Chec
 		return nil, fmt.Errorf("session cannot be nil")
 	}
 	setStandardFields(session)
+	g.logger.Debug("CreateCheckoutSession",
+		zap.String("mode", string(session.Mode)),
+		zap.Bool("has_line_items", session.LineItems != nil),
+	)
+	if session.LineItems != nil {
+		for i, item := range session.LineItems.Data {
+			priceID := ""
+			if item.Price != nil {
+				if p, err := item.Price.AsPrice(); err == nil {
+					priceID = p.Id
+				}
+			}
+			g.logger.Debug("CreateCheckoutSession: line_item",
+				zap.Int("index", i),
+				zap.String("price_id", priceID),
+			)
+		}
+	}
 	id, err := g.sessionRepo.Create(*session)
 	if err != nil {
+		g.logger.Error("CreateCheckoutSession: failed", zap.Error(err))
 		return nil, err
 	}
+	g.logger.Debug("CreateCheckoutSession: created", zap.String("id", id))
 	return g.sessionRepo.Get(id)
 }
 
 func (g *Gateway) GetCheckoutSession(id string) (*api.CheckoutSession, error) {
-	return g.sessionRepo.Get(id)
+	result, err := g.sessionRepo.Get(id)
+	if err != nil {
+		g.logger.Debug("GetCheckoutSession: not found", zap.String("id", id), zap.Error(err))
+		return nil, err
+	}
+	g.logger.Debug("GetCheckoutSession",
+		zap.String("id", id),
+		zap.String("mode", string(result.Mode)),
+		zap.Bool("has_line_items", result.LineItems != nil),
+	)
+	return result, nil
 }
 
 func (g *Gateway) ListCheckoutSessions() ([]api.CheckoutSession, error) {
@@ -207,11 +323,20 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 	// Get existing session
 	session, err := g.GetCheckoutSession(id)
 	if err != nil {
+		g.logger.Error("CompleteCheckoutSession: session not found", zap.String("id", id), zap.Error(err))
 		return nil, err
 	}
 
+	g.logger.Debug("CompleteCheckoutSession: completing session",
+		zap.String("id", id),
+		zap.String("mode", string(session.Mode)),
+		zap.String("status", string(*session.Status)),
+		zap.Bool("has_line_items", session.LineItems != nil),
+	)
+
 	// Validate session is in 'open' status
 	if *session.Status != "open" {
+		g.logger.Error("CompleteCheckoutSession: session not in open status", zap.String("id", id), zap.String("status", string(*session.Status)))
 		return nil, fmt.Errorf("session must be in 'open' status to complete")
 	}
 
@@ -227,11 +352,92 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 			customerID, _ = session.Customer.AsCheckoutSessionCustomer0()
 		}
 
+		g.logger.Debug("CompleteCheckoutSession: creating subscription",
+			zap.String("session_id", id),
+			zap.String("customer_id", customerID),
+		)
+
+		// Build subscription items from line_items
+		var subscriptionItems []api.SubscriptionItem
+		if session.LineItems != nil {
+			g.logger.Debug("CompleteCheckoutSession: processing line items",
+				zap.String("session_id", id),
+				zap.Int("line_item_count", len(session.LineItems.Data)),
+			)
+			for _, item := range session.LineItems.Data {
+				subItem := api.SubscriptionItem{
+					Id:      "si_" + generator.RandomString(14),
+					Object:  api.SubscriptionItemObjectEnumSubscriptionItem,
+					Created: int(time.Now().Unix()),
+				}
+				// Get the price ID from the line item
+				if item.Price != nil {
+					// First try to get just the ID from the stored line item
+					priceFromItem, err := item.Price.AsPrice()
+					if err == nil && priceFromItem.Id != "" {
+						g.logger.Debug("CompleteCheckoutSession: looking up price from storage",
+							zap.String("price_id", priceFromItem.Id),
+						)
+						// Look up the full price from storage to get metadata and recurring info
+						fullPrice, err := g.GetPrice(priceFromItem.Id)
+						if err == nil {
+							// Use the full price data from storage
+							subItem.Price = *fullPrice
+							// Calculate period dates based on price interval
+							periodStart, periodEnd := calculatePeriodDates(fullPrice)
+							subItem.CurrentPeriodStart = periodStart
+							subItem.CurrentPeriodEnd = periodEnd
+							g.logger.Debug("CompleteCheckoutSession: using full price from storage",
+								zap.String("price_id", priceFromItem.Id),
+								zap.Any("price_metadata", fullPrice.Metadata),
+								zap.Int("period_start", periodStart),
+								zap.Int("period_end", periodEnd),
+							)
+						} else {
+							// Price not in storage, use minimal price from line item
+							subItem.Price = priceFromItem
+							periodStart, periodEnd := calculatePeriodDates(&priceFromItem)
+							subItem.CurrentPeriodStart = periodStart
+							subItem.CurrentPeriodEnd = periodEnd
+							g.logger.Warn("CompleteCheckoutSession: price not found in storage, using minimal price",
+								zap.String("price_id", priceFromItem.Id),
+								zap.Error(err),
+							)
+						}
+					} else {
+						g.logger.Warn("CompleteCheckoutSession: could not extract price from line item",
+							zap.Error(err),
+							zap.Bool("price_id_empty", priceFromItem.Id == ""),
+						)
+					}
+				} else {
+					g.logger.Warn("CompleteCheckoutSession: line item has nil price")
+				}
+				if item.Quantity != nil {
+					subItem.Quantity = item.Quantity
+				}
+				subscriptionItems = append(subscriptionItems, subItem)
+			}
+		} else {
+			g.logger.Warn("CompleteCheckoutSession: session has no line items", zap.String("session_id", id))
+		}
+
+		g.logger.Debug("CompleteCheckoutSession: built subscription items",
+			zap.String("session_id", id),
+			zap.Int("item_count", len(subscriptionItems)),
+		)
+
 		// Create subscription
 		sub := &api.Subscription{
 			Object:   api.SubscriptionObjectEnumSubscription,
 			Status:   api.SubscriptionStatusActive,
 			Livemode: session.Livemode,
+			Items: api.SubscriptionItemList{
+				Data:    subscriptionItems,
+				HasMore: false,
+				Object:  api.SubscriptionItemListObjectList,
+				Url:     "/v1/subscription_items",
+			},
 		}
 		if customerID != "" {
 			var custUnion api.Subscription_Customer
@@ -241,10 +447,16 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 
 		createdSub, err := g.CreateSubscription(sub)
 		if err == nil {
+			g.logger.Debug("CompleteCheckoutSession: subscription created",
+				zap.String("subscription_id", createdSub.Id),
+				zap.Int("item_count", len(createdSub.Items.Data)),
+			)
 			// Link subscription to session
 			var subUnion api.CheckoutSession_Subscription
 			subUnion.FromCheckoutSessionSubscription0(createdSub.Id)
 			session.Subscription = &subUnion
+		} else {
+			g.logger.Error("CompleteCheckoutSession: failed to create subscription", zap.Error(err))
 		}
 	}
 
@@ -267,15 +479,45 @@ func (g *Gateway) CreateSubscription(sub *api.Subscription) (*api.Subscription, 
 	if sub.LatestInvoice == nil {
 		sub.LatestInvoice = &api.Subscription_LatestInvoice{}
 	}
+	g.logger.Debug("CreateSubscription",
+		zap.Int("item_count", len(sub.Items.Data)),
+	)
+	for i, item := range sub.Items.Data {
+		g.logger.Debug("CreateSubscription: item",
+			zap.Int("index", i),
+			zap.String("item_id", item.Id),
+			zap.String("price_id", item.Price.Id),
+			zap.Any("price_metadata", item.Price.Metadata),
+		)
+	}
 	id, err := g.subscriptionRepo.Create(*sub)
 	if err != nil {
+		g.logger.Error("CreateSubscription: failed to create", zap.Error(err))
 		return nil, err
 	}
 	return g.subscriptionRepo.Get(id)
 }
 
 func (g *Gateway) GetSubscription(id string) (*api.Subscription, error) {
-	return g.subscriptionRepo.Get(id)
+	result, err := g.subscriptionRepo.Get(id)
+	if err != nil {
+		g.logger.Debug("GetSubscription: not found", zap.String("id", id), zap.Error(err))
+		return nil, err
+	}
+	g.logger.Debug("GetSubscription",
+		zap.String("id", id),
+		zap.String("status", string(result.Status)),
+		zap.Int("item_count", len(result.Items.Data)),
+	)
+	for i, item := range result.Items.Data {
+		g.logger.Debug("GetSubscription: item",
+			zap.Int("index", i),
+			zap.String("item_id", item.Id),
+			zap.String("price_id", item.Price.Id),
+			zap.Any("price_metadata", item.Price.Metadata),
+		)
+	}
+	return result, nil
 }
 
 func (g *Gateway) ListSubscriptions() ([]api.Subscription, error) {
@@ -283,6 +525,7 @@ func (g *Gateway) ListSubscriptions() ([]api.Subscription, error) {
 }
 
 func (g *Gateway) UpdateSubscription(id string, subscription *api.Subscription) error {
+	g.logger.Debug("UpdateSubscription", zap.String("id", id), zap.String("status", string(subscription.Status)), zap.Int("item_count", len(subscription.Items.Data)))
 	return g.subscriptionRepo.Update(id, *subscription)
 }
 
@@ -337,6 +580,7 @@ func (g *Gateway) UpdateSubscriptionStatus(id string, status string) (*api.Subsc
 // Sets status to canceled and marks it as deleted.
 // Returns the canceled subscription.
 func (g *Gateway) CancelSubscription(id string) (*api.Subscription, error) {
+	g.logger.Debug("CancelSubscription", zap.String("id", id))
 	sub, err := g.GetSubscription(id)
 	if err != nil {
 		return nil, err
@@ -364,6 +608,7 @@ func (g *Gateway) CancelSubscription(id string) (*api.Subscription, error) {
 // This creates a "grace period" where the subscription remains active but will cancel.
 // Returns the updated subscription.
 func (g *Gateway) SetCancelAtPeriodEnd(id string) (*api.Subscription, error) {
+	g.logger.Debug("SetCancelAtPeriodEnd", zap.String("id", id))
 	sub, err := g.GetSubscription(id)
 	if err != nil {
 		return nil, err
@@ -419,6 +664,7 @@ func (g *Gateway) ExpireCanceledSubscription(id string) (*api.Subscription, erro
 
 // PauseSubscription pauses an active subscription
 func (g *Gateway) PauseSubscription(id string) (*api.Subscription, error) {
+	g.logger.Debug("PauseSubscription", zap.String("id", id))
 	sub, err := g.GetSubscription(id)
 	if err != nil {
 		return nil, err
@@ -442,6 +688,7 @@ func (g *Gateway) PauseSubscription(id string) (*api.Subscription, error) {
 
 // ResumeSubscription resumes a paused subscription
 func (g *Gateway) ResumeSubscription(id string) (*api.Subscription, error) {
+	g.logger.Debug("ResumeSubscription", zap.String("id", id))
 	sub, err := g.GetSubscription(id)
 	if err != nil {
 		return nil, err
@@ -470,6 +717,7 @@ func (g *Gateway) ResumeSubscription(id string) (*api.Subscription, error) {
 // 3. Update current_period_start and current_period_end
 // 4. Return updated subscription
 func (g *Gateway) RenewSubscription(id string) (*api.Subscription, error) {
+	g.logger.Debug("RenewSubscription", zap.String("id", id))
 	// Get existing subscription
 	sub, err := g.GetSubscription(id)
 	if err != nil {

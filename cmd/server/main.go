@@ -24,6 +24,9 @@ func main() {
 	logger := setupLogger(*verbose)
 	defer logger.Sync() // Flush any buffered log entries
 
+	// Set global logger so zap.L() works in gateway/storage/helpers
+	zap.ReplaceGlobals(logger)
+
 	logger.Info("Loading embedded spec")
 
 	apiSpec, err := spec.GetSpec()
@@ -70,14 +73,14 @@ func main() {
 
 // setupLogger configures a zap logger based on the verbose flag
 func setupLogger(verbose bool) *zap.Logger {
-	var development bool
+	level := zapcore.InfoLevel
 	if verbose {
-		development = true
+		level = zapcore.DebugLevel
 	}
 
 	config := zap.Config{
-		Level:       zap.NewAtomicLevelAt(zapcore.InfoLevel),
-		Development: development,
+		Level:       zap.NewAtomicLevelAt(level),
+		Development: verbose,
 		Sampling: &zap.SamplingConfig{
 			Initial:    100,
 			Thereafter: 100,

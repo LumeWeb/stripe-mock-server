@@ -141,7 +141,22 @@ func (s *Server) handleRetrieveCustomer(r *http.Request, pathParams map[string]s
 // Checkout Session handlers
 
 func (s *Server) handleCreateCheckoutSession(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
+	s.zap().Debug("handleCreateCheckoutSession",
+		zap.String("mode", GetString(data, "mode")),
+		zap.String("customer", GetString(data, "customer")),
+		zap.Any("line_items", data["line_items"]),
+	)
 	session := buildCheckoutSession("cs_"+generator.RandomString(14), data)
+	s.zap().Debug("handleCreateCheckoutSession: built session",
+		zap.String("id", session.Id),
+		zap.String("mode", string(session.Mode)),
+		zap.Bool("has_line_items", session.LineItems != nil),
+	)
+	if session.LineItems != nil {
+		s.zap().Debug("handleCreateCheckoutSession: line_items detail",
+			zap.Int("line_item_count", len(session.LineItems.Data)),
+		)
+	}
 	created, err := s.gateway.CreateCheckoutSession(session)
 	if err != nil {
 		return http.StatusInternalServerError, nil, err
@@ -156,11 +171,25 @@ func (s *Server) handleRetrieveCheckoutSession(r *http.Request, pathParams map[s
 func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
 	id := pathParams["id"]
 
+	s.zap().Debug("handleCompleteCheckoutSession",
+		zap.String("session_id", id),
+	)
+
 	// Complete the checkout session
 	updated, err := s.gateway.CompleteCheckoutSession(id)
 	if err != nil {
+		s.zap().Error("handleCompleteCheckoutSession: failed",
+			zap.String("session_id", id),
+			zap.Error(err),
+		)
 		return http.StatusBadRequest, nil, err
 	}
+
+	s.zap().Debug("handleCompleteCheckoutSession: completed",
+		zap.String("session_id", id),
+		zap.String("mode", string(updated.Mode)),
+		zap.Bool("has_subscription", updated.Subscription != nil),
+	)
 
 	// Trigger checkout.session.completed webhook asynchronously
 	go s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated, s.gateway))
@@ -210,7 +239,7 @@ func (s *Server) handleCreateBillingPortalSession(r *http.Request, pathParams ma
 		Created:  int(time.Now().Unix()),
 		Customer: customerID,
 		Url:      fmt.Sprintf("https://billing.stripe.com/p/session/%s", sessionID),
-		Livemode: false,
+		Livemode: true,
 	}
 
 	// Set return_url if provided
@@ -252,7 +281,7 @@ func (s *Server) handleCreateBillingPortalConfiguration(r *http.Request, pathPar
 		Id:        configID,
 		Object:    api.BillingPortalConfigurationObjectEnumBillingPortalConfiguration,
 		Created:   int(time.Now().Unix()),
-		Livemode:  false,
+		Livemode:  true,
 		IsDefault: false,
 		Active:    true,
 		Updated:   int(time.Now().Unix()),
@@ -498,9 +527,17 @@ func (s *Server) handleRetrieveSubscription(r *http.Request, pathParams map[stri
 	// Parse expand[] parameters from query string
 	expand := parseExpandParams(r)
 
+	s.zap().Debug("handleRetrieveSubscription",
+		zap.String("id", id),
+		zap.Strings("expand", expand),
+	)
+
 	subscription, err := s.gateway.GetSubscription(id)
 	if err != nil {
 		if err == storage.ErrNotFound {
+			s.zap().Debug("handleRetrieveSubscription: not found, returning mock",
+				zap.String("id", id),
+			)
 			// Return a mock subscription for testing
 			now := int(time.Now().Unix())
 			var customer api.Subscription_Customer
@@ -510,7 +547,7 @@ func (s *Server) handleRetrieveSubscription(r *http.Request, pathParams map[stri
 				Object:   api.SubscriptionObjectEnumSubscription,
 				Status:   "active",
 				Created:  now - 86400,
-				Livemode: false,
+				Livemode: true,
 				Customer: customer,
 				Metadata: map[string]string{},
 			}
@@ -520,6 +557,12 @@ func (s *Server) handleRetrieveSubscription(r *http.Request, pathParams map[stri
 		}
 		return http.StatusNotFound, nil, err
 	}
+
+	s.zap().Debug("handleRetrieveSubscription: found subscription",
+		zap.String("id", id),
+		zap.String("status", string(subscription.Status)),
+		zap.Int("item_count", len(subscription.Items.Data)),
+	)
 
 	// Apply expansions
 	s.expandSubscription(subscription, expand)
@@ -729,6 +772,11 @@ func parseExpandParams(r *http.Request) []string {
 
 // expandSubscription expands related objects in a subscription based on expand parameters
 func (s *Server) expandSubscription(sub *api.Subscription, expand []string) {
+	s.zap().Debug("expandSubscription",
+		zap.String("subscription_id", sub.Id),
+		zap.Strings("expand", expand),
+		zap.Int("item_count", len(sub.Items.Data)),
+	)
 	for _, exp := range expand {
 		switch exp {
 		case "items.data.price.product":
@@ -751,20 +799,35 @@ func (s *Server) expandSubscriptionItemsProduct(sub *api.Subscription) {
 		// Get the product ID from the price
 		productID := extractProductIDFromPrice(&sub.Items.Data[i].Price)
 		if productID == "" {
+			s.zap().Debug("expandSubscriptionItemsProduct: no product ID on price",
+				zap.Int("item_index", i),
+				zap.String("price_id", sub.Items.Data[i].Price.Id),
+			)
 			continue
 		}
 
 		// Try to get the product from storage
 		product, err := s.gateway.GetProduct(productID)
 		if err != nil {
+			s.zap().Debug("expandSubscriptionItemsProduct: product not found in storage, creating minimal",
+				zap.Int("item_index", i),
+				zap.String("product_id", productID),
+			)
 			// Create a minimal product if not found
 			product = &api.Product{
 				Id:       productID,
 				Object:   api.ProductObjectEnumProduct,
 				Created:  int(time.Now().Unix()),
-				Livemode: false,
+				Livemode: true,
 				Metadata: map[string]string{},
 			}
+		} else {
+			s.zap().Debug("expandSubscriptionItemsProduct: expanded product from storage",
+				zap.Int("item_index", i),
+				zap.String("product_id", productID),
+				zap.String("product_name", product.Name),
+				zap.Any("product_metadata", product.Metadata),
+			)
 		}
 
 		// Set expanded product on the price
@@ -777,15 +840,27 @@ func (s *Server) expandSubscriptionItemsPrice(sub *api.Subscription) {
 	for i := range sub.Items.Data {
 		priceID := sub.Items.Data[i].Price.Id
 		if priceID == "" {
+			s.zap().Debug("expandSubscriptionItemsPrice: item has no price ID", zap.Int("item_index", i))
 			continue
 		}
 
 		// Try to get the full price from storage
 		fullPrice, err := s.gateway.GetPrice(priceID)
 		if err != nil {
+			s.zap().Debug("expandSubscriptionItemsPrice: price not found in storage",
+				zap.Int("item_index", i),
+				zap.String("price_id", priceID),
+				zap.Error(err),
+			)
 			// Price not in storage, keep the minimal price
 			continue
 		}
+
+		s.zap().Debug("expandSubscriptionItemsPrice: expanded price from storage",
+			zap.Int("item_index", i),
+			zap.String("price_id", priceID),
+			zap.Any("price_metadata", fullPrice.Metadata),
+		)
 
 		// Check if the minimal price has an expanded product (not just an ID)
 		_, minPriceErr := sub.Items.Data[i].Price.Product.AsProduct()
@@ -797,6 +872,9 @@ func (s *Server) expandSubscriptionItemsPrice(sub *api.Subscription) {
 		// If the minimal price already had an expanded product, restore it
 		// Otherwise, use the product reference from the stored price
 		if hasExpandedProduct {
+			s.zap().Debug("expandSubscriptionItemsPrice: minimal price already had expanded product, preserving",
+				zap.Int("item_index", i),
+			)
 			// The caller may have already expanded the product, keep that
 			// (this shouldn't normally happen, but handle it gracefully)
 		}
@@ -819,7 +897,7 @@ func (s *Server) expandSubscriptionCustomer(sub *api.Subscription) {
 			Id:       customerID,
 			Object:   api.CustomerObjectEnumCustomer,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 			Metadata: &m,
 		}
 	}
@@ -846,7 +924,7 @@ func (s *Server) expandSubscriptionLatestInvoice(sub *api.Subscription) {
 			Id:       invoiceID,
 			Object:   api.InvoiceObjectEnumInvoice,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 		}
 	}
 
@@ -863,15 +941,21 @@ func extractProductIDFromPrice(price *api.Price) string {
 	// Try to get as string (ID only)
 	id, err := price.Product.AsPriceProduct0()
 	if err == nil && id != "" {
+		zap.L().Debug("extractProductIDFromPrice: found string ID", zap.String("product_id", id))
 		return id
 	}
 
 	// Try to get as Product object and extract ID
 	product, err := price.Product.AsProduct()
 	if err == nil {
+		zap.L().Debug("extractProductIDFromPrice: found expanded product", zap.String("product_id", product.Id), zap.String("product_name", product.Name))
 		return product.Id
 	}
 
+	zap.L().Debug("extractProductIDFromPrice: could not extract product ID from price",
+		zap.String("price_id", price.Id),
+		zap.Error(err),
+	)
 	return ""
 }
 
@@ -973,7 +1057,7 @@ func (s *Server) handleCreateWebhookEndpoint(r *http.Request, pathParams map[str
 		Id:        id,
 		Object:    api.WebhookEndpointObjectEnumWebhookEndpoint,
 		Created:   int(time.Now().Unix()),
-		Livemode:  false,
+		Livemode:  true,
 		Url:       GetString(data, "url"),
 		Status:    "enabled",
 		Metadata:  map[string]string{},

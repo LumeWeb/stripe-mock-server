@@ -115,6 +115,12 @@ func (s *Server) RegisterCustomHandler(verb, path string, handler CustomHandlerF
 	}
 
 	s.mux.HandleFunc(verb+" "+path, func(w http.ResponseWriter, r *http.Request) {
+		s.zap().Debug("custom handler dispatched",
+			zap.String("method", r.Method),
+			zap.String("path", r.URL.Path),
+			zap.String("pattern", verb+" "+path),
+		)
+
 		if !validateAuth(r.Header.Get("Authorization")) {
 			writeError(w, http.StatusUnauthorized, invalidAuthorization)
 			return
@@ -123,9 +129,22 @@ func (s *Server) RegisterCustomHandler(verb, path string, handler CustomHandlerF
 		pathParams := extractPathParams(r)
 		params, err := parseRequestParams(r)
 		if err != nil {
+			s.zap().Debug("custom handler: failed to parse request params", zap.Error(err))
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+
+		s.zap().Debug("custom handler: parsed params",
+			zap.String("path", r.URL.Path),
+			zap.Any("path_params", pathParams),
+			zap.Any("data_keys", func() []string {
+				keys := make([]string, 0, len(params))
+				for k := range params {
+					keys = append(keys, k)
+				}
+				return keys
+			}()),
+		)
 
 		statusCode, data, err := handler(r, pathParams, params)
 		if err != nil {
@@ -133,9 +152,18 @@ func (s *Server) RegisterCustomHandler(verb, path string, handler CustomHandlerF
 			if errors.Is(err, storage.ErrNotFound) {
 				status = http.StatusNotFound
 			}
+			s.zap().Debug("custom handler: handler returned error",
+				zap.String("path", r.URL.Path),
+				zap.Int("status", status),
+				zap.Error(err),
+			)
 			writeError(w, status, err.Error())
 			return
 		}
+		s.zap().Debug("custom handler: handler returned success",
+			zap.String("path", r.URL.Path),
+			zap.Int("status", statusCode),
+		)
 		writeResponse(w, time.Now(), statusCode, data)
 	})
 
@@ -211,7 +239,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		AmountDue: 1000, // Simplified default amount
 		Currency:  "usd",
 		Created:   int(time.Now().Unix()),
-		Livemode:  false,
+		Livemode:  true,
 	}
 
 	// Event 2: invoice.created (status: draft)
@@ -240,7 +268,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		Currency: createdInvoice.Currency,
 		Status:   "succeeded",
 		Created:  int(time.Now().Unix()),
-		Livemode: false,
+		Livemode: true,
 	}
 	createdCharge, err := s.gateway.CreateCharge(charge)
 	if err != nil {
@@ -293,7 +321,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		AmountDue: amount,
 		Currency:  currency,
 		Created:   int(time.Now().Unix()),
-		Livemode:  false,
+		Livemode:  true,
 		// Mark as renewal invoice
 		BillingReason: &renewReason,
 	}
@@ -326,7 +354,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		Currency: createdInvoice.Currency,
 		Status:   "succeeded",
 		Created:  int(time.Now().Unix()),
-		Livemode: false,
+		Livemode: true,
 		// Invoice: createdInvoice.Id, // Link to invoice (if field exists)
 	}
 
@@ -628,7 +656,7 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 		AmountPaid:    amount,
 		Currency:      currency,
 		Created:       now,
-		Livemode:      false,
+		Livemode:      true,
 		BillingReason: &billingReason,
 	}
 
@@ -646,7 +674,7 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 		Currency:     currency,
 		Description:  &[]string{"Subscription"}[0],
 		Discountable: false,
-		Livemode:     false,
+		Livemode:     true,
 		Metadata:     map[string]string{},
 		Period: api.InvoiceLineItemPeriod{
 			Start: now,
@@ -658,7 +686,7 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 	_ = lineItem.Subscription.FromLineItemSubscription0(subscriptionID)
 
 	invoice.Lines.Data = []api.LineItem{lineItem}
-	invoice.Lines.Object = api.InvoiceLinesObject("list")
+	invoice.Lines.Object = api.InvoiceLinesListObjectList
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
@@ -740,7 +768,7 @@ func (s *Server) triggerInvoiceWaterfall(amount int, currency string, subscripti
 		AmountDue: amount,
 		Currency:  currency,
 		Created:   now,
-		Livemode:  false,
+		Livemode:  true,
 	}
 	if billingReason != nil {
 		invoice.BillingReason = billingReason
@@ -763,7 +791,7 @@ func (s *Server) triggerInvoiceWaterfall(amount int, currency string, subscripti
 				Currency:     currency,
 				Description:  new("Subscription"),
 				Discountable: false,
-				Livemode:     false,
+				Livemode:     true,
 				Metadata:     map[string]string{},
 				Period: api.InvoiceLineItemPeriod{
 					Start: now,
@@ -800,7 +828,7 @@ func (s *Server) triggerInvoiceWaterfall(amount int, currency string, subscripti
 		Currency: currency,
 		Status:   api.ChargeStatusSucceeded,
 		Created:  now,
-		Livemode: false,
+		Livemode: true,
 	}
 	if _, err := s.gateway.CreateCharge(charge); err != nil {
 		s.zap().Error("Failed to create charge", zap.Error(err))

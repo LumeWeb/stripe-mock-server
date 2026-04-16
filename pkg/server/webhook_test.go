@@ -424,7 +424,7 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 	opts := &CreateOpts{
 		URL:     testServer.URL,
 		Enabled: []string{"checkout.session.completed", "customer.created", "customer.subscription.created"},
-		Livemode: false,
+		Livemode: true,
 		Secret:  "whsec_test_secret",
 	}
 

@@ -28,7 +28,7 @@ func testCreateOpts(url string) *CreateOpts {
 	return &CreateOpts{
 		URL:      url,
 		Enabled:  []string{"customer.created"},
-		Livemode: false,
+		Livemode: true,
 		Secret:   "whsec_test_secret",
 	}
 }
@@ -288,7 +288,7 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 		opts := &CreateOpts{
 			URL:      server.URL,
 			Enabled:  []string{"*"},
-			Livemode: false,
+			Livemode: true,
 			Secret:   "whsec_test_secret",
 		}
 		w, err := service.CreateWebhook(opts.URL, opts)
@@ -305,7 +305,7 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 			Object:            api.SubscriptionObjectEnumSubscription,
 			Status:            api.SubscriptionStatusActive,
 			Created:           now,
-			Livemode:          false,
+			Livemode:          true,
 			Customer:          cust,
 			CancelAtPeriodEnd: false,
 		}
