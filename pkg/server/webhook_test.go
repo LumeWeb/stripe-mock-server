@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -347,4 +348,151 @@ func TestWebhookWaterfallIncrementingTimestamps(t *testing.T) {
 	// Verify the last event has a later timestamp than the first
 	assert.Greater(t, events[len(events)-1].Created, events[0].Created,
 		"last event should have later timestamp than first event")
+}
+
+// TestWebhookObjectSerialization verifies that webhook wrapper objects serialize correctly
+func TestWebhookObjectSerialization(t *testing.T) {
+	t.Run("webhookCheckoutSession", func(t *testing.T) {
+		session := &api.CheckoutSession{
+			Id:     "cs_test123",
+			Object: "checkout.session",
+		}
+		wrapper := newWebhookCheckoutSession(session)
+		
+		// Serialize the wrapper
+		jsonBytes, err := json.Marshal(wrapper)
+		require.NoError(t, err)
+		
+		// It should NOT be empty!
+		assert.NotEqual(t, "{}", string(jsonBytes), "webhookCheckoutSession should serialize the session data")
+		
+		// Verify the ID is in the output
+		assert.Contains(t, string(jsonBytes), "cs_test123")
+	})
+	
+	t.Run("webhookSubscription", func(t *testing.T) {
+		sub := &api.Subscription{
+			Id:     "sub_test123",
+			Object: "subscription",
+		}
+		wrapper := newWebhookSubscription(sub)
+		
+		jsonBytes, err := json.Marshal(wrapper)
+		require.NoError(t, err)
+		
+		assert.NotEqual(t, "{}", string(jsonBytes), "webhookSubscription should serialize the subscription data")
+		assert.Contains(t, string(jsonBytes), "sub_test123")
+	})
+	
+	t.Run("webhookCustomer", func(t *testing.T) {
+		customer := &api.Customer{
+			Id:     "cus_test123",
+			Object: "customer",
+		}
+		wrapper := newWebhookCustomer(customer)
+		
+		jsonBytes, err := json.Marshal(wrapper)
+		require.NoError(t, err)
+		
+		assert.NotEqual(t, "{}", string(jsonBytes), "webhookCustomer should serialize the customer data")
+		assert.Contains(t, string(jsonBytes), "cus_test123")
+	})
+}
+
+// TestWebhookPayloadContainsResourceData verifies that webhook payloads contain actual resource data
+func TestWebhookPayloadContainsResourceData(t *testing.T) {
+	service := setupWebhookTest(t)
+
+	var receivedPayloads []map[string]any
+	var payloadsMutex sync.Mutex
+
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		payloadsMutex.Lock()
+		receivedPayloads = append(receivedPayloads, payload)
+		payloadsMutex.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer testServer.Close()
+
+	opts := &CreateOpts{
+		URL:     testServer.URL,
+		Enabled: []string{"checkout.session.completed", "customer.created", "customer.subscription.created"},
+		Livemode: false,
+		Secret:  "whsec_test_secret",
+	}
+
+	webhook, err := service.CreateWebhook(testServer.URL, opts)
+	require.NoError(t, err)
+	require.NotNil(t, webhook)
+
+	// Test checkout.session.completed webhook
+	t.Run("checkout.session.completed has resource data", func(t *testing.T) {
+		receivedPayloads = nil
+
+		session := &api.CheckoutSession{
+			Id:     "cs_test_data_check",
+			Object: "checkout.session",
+			Status: ptrTo(api.CheckoutSessionStatusComplete),
+		}
+		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session)))
+
+		_, err := service.DeliverEvent(webhook.Id, event)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		payloadsMutex.Lock()
+		defer payloadsMutex.Unlock()
+		require.Len(t, receivedPayloads, 1)
+
+		// Verify the data.object contains actual session data, not empty object
+		dataObj := receivedPayloads[0]["data"].(map[string]any)["object"]
+		objMap, ok := dataObj.(map[string]any)
+		require.True(t, ok, "data.object should be a map")
+		assert.Equal(t, "cs_test_data_check", objMap["id"], "data.object.id should be set")
+		assert.Equal(t, "checkout.session", objMap["object"], "data.object.object should be set")
+	})
+
+	t.Run("customer.created has resource data", func(t *testing.T) {
+		receivedPayloads = nil
+
+		customer := &api.Customer{
+			Id:     "cus_test_data_check",
+			Object: "customer",
+			Email:  ptrTo("test@example.com"),
+		}
+		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer)))
+
+		_, err := service.DeliverEvent(webhook.Id, event)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		payloadsMutex.Lock()
+		defer payloadsMutex.Unlock()
+		require.Len(t, receivedPayloads, 1)
+
+		dataObj := receivedPayloads[0]["data"].(map[string]any)["object"]
+		objMap, ok := dataObj.(map[string]any)
+		require.True(t, ok, "data.object should be a map")
+		assert.Equal(t, "cus_test_data_check", objMap["id"], "data.object.id should be set")
+		assert.Equal(t, "customer", objMap["object"], "data.object.object should be set")
+	})
+}
+
+func ptrTo[T any](v T) *T { return &v }
+
+func mustMarshal(v interface{}) []byte {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
