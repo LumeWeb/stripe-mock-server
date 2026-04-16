@@ -30,17 +30,37 @@ def get_enum_hash(enum_def: dict) -> int:
     enum_tuple = tuple(sorted([str(v) for v in enum_def.get('enum', [])]))
     return hash((enum_type, enum_tuple))
 
+def get_schema_hash(schema: dict) -> int:
+    """Fast hash-based fingerprint for object schema."""
+    # Create a stable string representation of the schema
+    schema_copy = {k: v for k, v in schema.items() if k != 'title'}
+    return hash(json.dumps(schema_copy, sort_keys=True))
+
+def normalize_title(title: str) -> str:
+    """Normalize a title to a valid schema name (snake_case)."""
+    # Convert PascalCase/camelCase to snake_case
+    result = []
+    for i, c in enumerate(title):
+        if c.isupper() and i > 0 and title[i-1].islower():
+            result.append('_')
+        elif c.isupper() and i > 0 and i < len(title) - 1 and title[i+1].islower():
+            result.append('_')
+        result.append(c.lower())
+    return ''.join(result)
+
 def traverse_spec(spec: dict) -> tuple:
     """
-    Single-pass traversal finding both:
+    Single-pass traversal finding:
     1. Form data enums with potential conflicts
-    2. anyOF array items with enums
+    2. anyOf array items with enums
+    3. Inline object schemas with titles
     
     Returns:
-        (formdataenums_by_path, anyofarrayenums_by_hash)
+        (formdataenums_by_path, anyofarrayenums_by_hash, inline_objects_by_title)
     """
     formdata_enums = {}  # {path: [enum_infos]}
     anyof_enums = {}     # {hash: [enum_infos]}
+    inline_objects = {}  # {title: [schema_infos]}
     
     def is_formdata_context(path_parts) -> bool:
         """Check if current path is within a form data schema."""
@@ -50,6 +70,25 @@ def traverse_spec(spec: dict) -> tuple:
         for i in range(len(path_parts) - 2):
             if path_parts[i] == 'content' and path_parts[i+1] == 'application/x-www-form-urlencoded':
                 return True
+        return False
+    
+    def is_component_schema_definition(path_parts) -> bool:
+        """Check if current path is a component schema definition (not a nested property)."""
+        # We're at a component schema definition if:
+        # path is ['root', 'components', 'schemas', '<schema_name>']
+        # or ['components', 'schemas', '<schema_name>'] (after initial root)
+        if len(path_parts) < 4:
+            return False
+        # Check if path pattern matches components/schemas/<name>
+        # We're at the schema definition level if the path ends right after the schema name
+        # i.e., the last two elements before the schema name are 'components' and 'schemas'
+        # and we're at the schema name itself
+        if path_parts[-3] == 'components' and path_parts[-2] == 'schemas':
+            # We're at the schema name level or deeper
+            # We only want to skip if we're AT the schema name level
+            # If we're at properties/<prop>, path_parts would be [..., 'schemas', '<name>', 'properties', '<prop>']
+            # So path_parts[-3] would be 'schemas' and path_parts[-2] would be '<name>'
+            return len(path_parts) == 4 or (len(path_parts) > 4 and path_parts[-4] != 'schemas')
         return False
     
     def scan(obj, parent, key, path_parts):
@@ -72,7 +111,7 @@ def traverse_spec(spec: dict) -> tuple:
             formdata_enums[path_key].append(enum_info)
         
         # Check for anyOf array items with enums
-        elif 'anyOf' in obj:
+        if 'anyOf' in obj:
             for branch in obj['anyOf']:
                 if isinstance(branch, dict) and branch.get('type') == 'array':
                     items = branch.get('items')
@@ -87,12 +126,30 @@ def traverse_spec(spec: dict) -> tuple:
                             anyof_enums[enum_hash] = []
                         anyof_enums[enum_hash].append(enum_info)
         
+        # Check for inline object schemas with titles (skip component schema definitions themselves)
+        if ('title' in obj and obj.get('type') == 'object' and 
+            not is_component_schema_definition(path_parts) and
+            '$ref' not in obj):
+            title = obj['title']
+            schema_info = {
+                'schema': obj,
+                'parent': parent,
+                'key_in_parent': key
+            }
+            if title not in inline_objects:
+                inline_objects[title] = []
+            inline_objects[title].append(schema_info)
+        
         # Continue traversal (make copy for each branch)
         for k, v in obj.items():
-            scan(v, obj, k, list(path_parts))
+            if isinstance(v, list):
+                for i, item in enumerate(v):
+                    scan(item, obj, f"{k}[{i}]", list(path_parts))
+            else:
+                scan(v, obj, k, list(path_parts))
     
     scan(spec, None, 'root', [])
-    return formdata_enums, anyof_enums
+    return formdata_enums, anyof_enums, inline_objects
 
 def process_formdata_enums(spec: dict, formdata_enums: dict) -> dict:
     """Process and convert form data inline enums to component schemas."""
@@ -166,6 +223,45 @@ def process_anyof_enums(spec: dict, anyof_enums: dict) -> dict:
         'schemas_added': schemas_added
     }
 
+def process_inline_objects(spec: dict, inline_objects: dict) -> dict:
+    """Process and convert inline object schemas with titles to component schemas."""
+    ensure_components_section(spec)
+    
+    schemas_added = 0
+    converted_count = 0
+    skipped_count = 0
+    
+    for title, schema_infos in inline_objects.items():
+        schema_name = normalize_title(title)
+        
+        # Check if schema already exists in components
+        if schema_name in spec['components']['schemas']:
+            # Schema exists, just add refs
+            pass
+        else:
+            # Add new component schema (use first occurrence as template)
+            template = schema_infos[0]['schema'].copy()
+            # Remove title from component schema (it's now the schema name)
+            template.pop('title', None)
+            spec['components']['schemas'][schema_name] = template
+            schemas_added += 1
+        
+        # Replace all inline schemas with $ref
+        for info in schema_infos:
+            parent = info['parent']
+            key = info['key_in_parent']
+            if isinstance(parent, dict) and key in parent:
+                parent[key] = {"$ref": f"#/components/schemas/{schema_name}"}
+                converted_count += 1
+    
+    return {
+        'found': sum(len(v) for v in inline_objects.values()),
+        'unique': len(inline_objects),
+        'converted': converted_count,
+        'schemas_added': schemas_added,
+        'skipped': skipped_count
+    }
+
 def validate_json(file_path: str) -> bool:
     """Validate JSON file."""
     try:
@@ -197,12 +293,13 @@ def main():
         sys.exit(1)
     
     # Single-pass traversal
-    formdata_enums, anyof_enums = traverse_spec(spec)
+    formdata_enums, anyof_enums, inline_objects = traverse_spec(spec)
     
     # Process conversions
     try:
         formdata_results = process_formdata_enums(spec, formdata_enums)
         anyof_results = process_anyof_enums(spec, anyof_enums)
+        inline_results = process_inline_objects(spec, inline_objects)
     except Exception as e:
         sys.stderr.write(f"ERROR: Processing failed: {e}\n")
         sys.exit(1)
@@ -238,6 +335,7 @@ def main():
         'output_file': output_file,
         'formdata_processing': formdata_results,
         'anyof_processing': anyof_results,
+        'inline_object_processing': inline_results,
         'total_component_schemas': len(spec.get('components', {}).get('schemas', {}))
     }, indent=2))
 

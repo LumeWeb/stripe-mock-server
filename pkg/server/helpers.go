@@ -548,6 +548,40 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 		s.Metadata = &m
 	}
 
+	// Handle line_items for subscription mode
+	if lineItems := GetMapSlice(data, "line_items"); len(lineItems) > 0 {
+		items := make([]api.Item, len(lineItems))
+		for i, item := range lineItems {
+			items[i] = api.Item{
+				Id:     "li_" + generator.RandomString(14),
+				Object: api.ItemObjectEnumItem,
+			}
+			if priceID := GetString(item, "price"); priceID != "" {
+				var priceUnion api.Item_Price
+				price := api.Price{
+					Id:       priceID,
+					Object:   api.PriceObjectEnumPrice,
+					Currency: "usd",
+					Active:   true,
+					Livemode: false,
+					Type:     api.PriceTypeEnumRecurring,
+				}
+				_ = priceUnion.FromPrice(price)
+				items[i].Price = &priceUnion
+			}
+			if qty := GetInt64(item, "quantity"); qty != 0 {
+				q := int(qty)
+				items[i].Quantity = &q
+			}
+		}
+		s.LineItems = &api.PaymentPagesCheckoutSessionListLineItems{
+			Data:    items,
+			HasMore: false,
+			Object:  api.PaymentPagesCheckoutSessionListLineItemsObjectList,
+			Url:     "/v1/checkout/sessions/" + id + "/line_items",
+		}
+	}
+
 	return s
 }
 

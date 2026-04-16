@@ -658,7 +658,7 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 	_ = lineItem.Subscription.FromLineItemSubscription0(subscriptionID)
 
 	invoice.Lines.Data = []api.LineItem{lineItem}
-	invoice.Lines.Object = api.InvoiceLinesObject("list")
+	invoice.Lines.Object = api.InvoiceLinesListObjectList
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {

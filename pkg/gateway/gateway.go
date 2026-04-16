@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"go.lumeweb.com/stripe-mock-server/pkg/generator"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 )
@@ -227,11 +228,39 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 			customerID, _ = session.Customer.AsCheckoutSessionCustomer0()
 		}
 
+		// Build subscription items from line_items
+		var subscriptionItems []api.SubscriptionItem
+		if session.LineItems != nil {
+			for _, item := range session.LineItems.Data {
+				subItem := api.SubscriptionItem{
+					Id:      "si_" + generator.RandomString(14),
+					Object:  api.SubscriptionItemObjectEnumSubscriptionItem,
+					Created: int(time.Now().Unix()),
+				}
+				if item.Price != nil {
+					price, err := item.Price.AsPrice()
+					if err == nil {
+						subItem.Price = price
+					}
+				}
+				if item.Quantity != nil {
+					subItem.Quantity = item.Quantity
+				}
+				subscriptionItems = append(subscriptionItems, subItem)
+			}
+		}
+
 		// Create subscription
 		sub := &api.Subscription{
 			Object:   api.SubscriptionObjectEnumSubscription,
 			Status:   api.SubscriptionStatusActive,
 			Livemode: session.Livemode,
+			Items: api.SubscriptionItemList{
+				Data:    subscriptionItems,
+				HasMore: false,
+				Object:  api.SubscriptionItemListObjectList,
+				Url:     "/v1/subscription_items",
+			},
 		}
 		if customerID != "" {
 			var custUnion api.Subscription_Customer
