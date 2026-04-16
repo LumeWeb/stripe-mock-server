@@ -11,6 +11,58 @@ import (
 	"go.lumeweb.com/stripe-mock-server/pkg/storage"
 )
 
+// calculatePeriodDates calculates subscription item period dates based on price recurring interval.
+// Returns (periodStart, periodEnd) based on the price's interval and interval_count.
+// Follows the same logic as portal subscription package's CalculateFirstCycle.
+func calculatePeriodDates(price *api.Price) (periodStart, periodEnd int) {
+	now := int(time.Now().Unix())
+	periodStart = now
+
+	// Default to monthly (30 days) if no recurring information
+	if price == nil || price.Recurring == nil {
+		periodEnd = now + 2592000 // 30 days in seconds
+		return
+	}
+
+	// Get the recurring data
+	var interval api.Price_Recurring
+	interval = *price.Recurring
+	recurringData, err := interval.AsRecurring()
+	if err != nil {
+		// Fallback to monthly on error
+		periodEnd = now + 2592000
+		return
+	}
+
+	// Get interval count, default to 1
+	intervalCount := 1
+	if recurringData.IntervalCount != 0 {
+		intervalCount = recurringData.IntervalCount
+	}
+
+	// Calculate end date based on interval, matching portal subscription package
+	// Cadence.AddTo() behavior
+	nowTime := time.Now()
+	var endTime time.Time
+
+	switch recurringData.Interval {
+	case api.RecurringIntervalDay:
+		endTime = nowTime.AddDate(0, 0, intervalCount)
+	case api.RecurringIntervalWeek:
+		endTime = nowTime.AddDate(0, 0, 7*intervalCount)
+	case api.RecurringIntervalMonth:
+		endTime = nowTime.AddDate(0, intervalCount, 0)
+	case api.RecurringIntervalYear:
+		endTime = nowTime.AddDate(intervalCount, 0, 0)
+	default:
+		// Unknown interval, fallback to monthly
+		endTime = nowTime.AddDate(0, 1, 0)
+	}
+
+	periodEnd = int(endTime.Unix())
+	return
+}
+
 // Gateway provides business logic for Stripe-like operations
 type Gateway struct {
 	customerRepo     storage.Repository[api.Customer]
@@ -237,10 +289,27 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 					Object:  api.SubscriptionItemObjectEnumSubscriptionItem,
 					Created: int(time.Now().Unix()),
 				}
+				// Get the price ID from the line item
 				if item.Price != nil {
-					price, err := item.Price.AsPrice()
-					if err == nil {
-						subItem.Price = price
+					// First try to get just the ID from the stored line item
+					priceFromItem, err := item.Price.AsPrice()
+					if err == nil && priceFromItem.Id != "" {
+						// Look up the full price from storage to get metadata and recurring info
+						fullPrice, err := g.GetPrice(priceFromItem.Id)
+						if err == nil {
+							// Use the full price data from storage
+							subItem.Price = *fullPrice
+							// Calculate period dates based on price interval
+							periodStart, periodEnd := calculatePeriodDates(fullPrice)
+							subItem.CurrentPeriodStart = periodStart
+							subItem.CurrentPeriodEnd = periodEnd
+						} else {
+							// Price not in storage, use minimal price from line item
+							subItem.Price = priceFromItem
+							periodStart, periodEnd := calculatePeriodDates(&priceFromItem)
+							subItem.CurrentPeriodStart = periodStart
+							subItem.CurrentPeriodEnd = periodEnd
+						}
 					}
 				}
 				if item.Quantity != nil {

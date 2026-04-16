@@ -558,13 +558,12 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 			}
 			if priceID := GetString(item, "price"); priceID != "" {
 				var priceUnion api.Item_Price
+				// Store minimal price reference with ID
+				// Actual price attributes will be fetched from storage
+				// during checkout session completion
 				price := api.Price{
-					Id:       priceID,
-					Object:   api.PriceObjectEnumPrice,
-					Currency: "usd",
-					Active:   true,
-					Livemode: false,
-					Type:     api.PriceTypeEnumRecurring,
+					Id:     priceID,
+					Object: api.PriceObjectEnumPrice,
 				}
 				_ = priceUnion.FromPrice(price)
 				items[i].Price = &priceUnion
