@@ -1,11 +1,9 @@
 package server
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +19,7 @@ import (
 func TestUpdateCustomerMetadata(t *testing.T) {
 	t.Run("update nil metadata with new data", func(t *testing.T) {
 		customer := &api.Customer{
-			Name: strPtr("Test Customer"),
+			Name: new("Test Customer"),
 		}
 
 		newMetadata := map[string]any{
@@ -41,7 +39,7 @@ func TestUpdateCustomerMetadata(t *testing.T) {
 			"existing": "value",
 		}
 		customer := &api.Customer{
-			Name:     strPtr("Test Customer"),
+			Name:     new("Test Customer"),
 			Metadata: &existing,
 		}
 
@@ -57,7 +55,7 @@ func TestUpdateCustomerMetadata(t *testing.T) {
 
 	t.Run("merge with mixed types in new metadata", func(t *testing.T) {
 		customer := &api.Customer{
-			Name: strPtr("Test Customer"),
+			Name: new("Test Customer"),
 		}
 
 		newMetadata := map[string]any{
@@ -76,7 +74,7 @@ func TestUpdateCustomerMetadata(t *testing.T) {
 
 	t.Run("nil new metadata does nothing", func(t *testing.T) {
 		customer := &api.Customer{
-			Name: strPtr("Test Customer"),
+			Name: new("Test Customer"),
 		}
 
 		updateCustomerMetadata(customer, nil)
@@ -89,7 +87,7 @@ func TestUpdateCustomerMetadata(t *testing.T) {
 			"existing": "value",
 		}
 		customer := &api.Customer{
-			Name:     strPtr("Test Customer"),
+			Name:     new("Test Customer"),
 			Metadata: &existing,
 		}
 
@@ -103,7 +101,7 @@ func TestUpdateCustomerMetadata(t *testing.T) {
 			"key": "old_value",
 		}
 		customer := &api.Customer{
-			Name:     strPtr("Test Customer"),
+			Name:     new("Test Customer"),
 			Metadata: &existing,
 		}
 
@@ -553,8 +551,12 @@ func TestCheckoutSessionHandlers(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("CompleteCheckoutSession - success", func(t *testing.T) {
-		// First create a session
+	t.Run("CompleteCheckoutSession - payment mode (no invoice waterfall)", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create a payment mode session
 		createData := map[string]any{
 			"mode":        "payment",
 			"success_url": "https://example.com/success",
@@ -574,6 +576,99 @@ func TestCheckoutSessionHandlers(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, api.CheckoutSessionStatusComplete, *completed.Status)
 		assert.Equal(t, api.CheckoutSessionPaymentStatusPaid, completed.PaymentStatus)
+		
+		// Wait for webhooks
+		time.Sleep(500 * time.Millisecond)
+		
+		// Payment mode should only fire checkout.session.completed, NOT invoice events
+		eventTypes := wc.GetEventTypes()
+		assert.Contains(t, eventTypes, "checkout.session.completed", "should fire checkout.session.completed")
+		assert.NotContains(t, eventTypes, "invoice.paid", "payment mode should NOT fire invoice.paid")
+		assert.NotContains(t, eventTypes, "invoice.created", "payment mode should NOT fire invoice.created")
+	})
+
+	t.Run("CompleteCheckoutSession - subscription mode with invoice.paid waterfall", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+		
+		// Create customer with metadata (simulates portal user)
+		customerData := map[string]any{
+			"name":     "Test Customer",
+			"email":    "test@example.com",
+			"metadata": map[string]any{"user_id": "12345"},
+		}
+		_, customerResult, err := s.handleCreateCustomer(nil, nil, customerData)
+		require.NoError(t, err)
+		customer := customerResult.(*api.Customer)
+		
+		// Create a subscription mode session with customer and client_reference_id
+		createData := map[string]any{
+			"mode":               "subscription",
+			"success_url":        "https://example.com/success",
+			"customer":           customer.Id,
+			"client_reference_id": "12345",
+			"line_items": []map[string]any{
+				{
+					"price":    "price_monthly",
+					"quantity": 1,
+				},
+			},
+		}
+		status, result, err := s.handleCreateCheckoutSession(nil, nil, createData)
+		require.NoError(t, err)
+		session := result.(*api.CheckoutSession)
+		assert.Equal(t, http.StatusOK, status)
+		assert.Equal(t, api.CheckoutSessionModeEnumSubscription, session.Mode)
+
+		// Complete the session
+		status, result, err = s.handleCompleteCheckoutSession(nil, map[string]string{"id": session.Id}, nil)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, status)
+
+		completed, ok := result.(*api.CheckoutSession)
+		require.True(t, ok)
+		assert.Equal(t, api.CheckoutSessionStatusComplete, *completed.Status)
+		require.NotNil(t, completed.Subscription, "subscription should be created")
+		
+		// Extract subscription ID to verify it exists
+		subID, err := completed.Subscription.AsCheckoutSessionSubscription0()
+		require.NoError(t, err)
+		require.NotEmpty(t, subID, "subscription ID should not be empty")
+		
+		// Verify subscription exists in gateway
+		_, err = s.gateway.GetSubscription(subID)
+		require.NoError(t, err, "subscription should exist in gateway")
+		
+		// Wait for webhooks (need extra time for the 100ms delay in handler + async delivery)
+		time.Sleep(1 * time.Second)
+		
+		// Verify webhook sequence
+		eventTypes := wc.GetEventTypes()
+		
+		// Should fire checkout.session.completed first
+		require.Contains(t, eventTypes, "checkout.session.completed", "should fire checkout.session.completed")
+		
+		// Should fire invoice.paid for subscription mode (this is what activates subscription in portal)
+		assert.Contains(t, eventTypes, "invoice.paid", "subscription mode should fire invoice.paid")
+		
+		// Find the invoice.paid event and verify it has subscription ID in lines
+		invoiceEvent, found := wc.GetEventByType("invoice.paid")
+		if found {
+			data := invoiceEvent["data"].(map[string]any)
+			obj := data["object"].(map[string]any)
+			
+			// Verify invoice has customer
+			assert.Contains(t, obj, "customer", "invoice should have customer")
+			
+			// Verify invoice has lines with subscription
+			lines := obj["lines"].(map[string]any)
+			linesData := lines["data"].([]any)
+			require.Greater(t, len(linesData), 0, "invoice should have line items")
+			
+			lineItem := linesData[0].(map[string]any)
+			assert.Contains(t, lineItem, "subscription", "line item should have subscription field")
+		}
 	})
 
 	t.Run("CompleteCheckoutSession - not found", func(t *testing.T) {
@@ -792,41 +887,9 @@ func TestSubscriptionHandlers(t *testing.T) {
 	})
 
 	t.Run("triggerSubscriptionLifecycle - webhook waterfall", func(t *testing.T) {
-		// Setup fresh test server for this test to avoid webhook conflicts
 		s := setupTestServer(t, false)
-		
-		// Setup test server with webhook endpoint to capture events
-		var receivedEvents []string
-		var eventsMutex sync.Mutex
-		
-		testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			var event map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			
-			eventsMutex.Lock()
-			if eventType, ok := event["type"]; ok {
-				receivedEvents = append(receivedEvents, eventType.(string))
-			}
-			eventsMutex.Unlock()
-			
-			w.WriteHeader(http.StatusOK)
-		}))
-		defer testServer.Close()
-		
-		// Create webhook endpoint that listens to all subscription-related events
-		opts := &CreateOpts{
-			URL:     testServer.URL,
-			Enabled: []string{"*"},
-			Livemode: false,
-			Secret:  "whsec_test_secret",
-		}
-		
-		webhook, err := s.webhook.CreateWebhook(testServer.URL, opts)
-		require.NoError(t, err)
-		require.NotNil(t, webhook)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
 		
 		// Create a subscription (this triggers the lifecycle)
 		subData := map[string]any{
@@ -852,26 +915,19 @@ func TestSubscriptionHandlers(t *testing.T) {
 			string(stripe.EventTypeCustomerSubscriptionUpdated),
 		}
 		
-		eventsMutex.Lock()
-		defer eventsMutex.Unlock()
+		eventTypes := wc.GetEventTypes()
 		
 		// Check that we received all expected events (order may vary due to async processing)
-		assert.Equal(t, len(expectedEvents), len(receivedEvents), "Expected %d events, got %d: %v", len(expectedEvents), len(receivedEvents), receivedEvents)
-		
-		// Create a map for quick lookup
-		receivedMap := make(map[string]bool)
-		for _, event := range receivedEvents {
-			receivedMap[event] = true
-		}
+		assert.Equal(t, len(expectedEvents), len(eventTypes), "Expected %d events, got %d: %v", len(expectedEvents), len(eventTypes), eventTypes)
 		
 		// Verify each expected event was received
 		for _, expected := range expectedEvents {
-			assert.True(t, receivedMap[expected], "Expected event %s to be received", expected)
+			assert.Contains(t, eventTypes, expected, "Expected event %s to be received", expected)
 		}
 		
 		// Verify first event is subscription.created (this should always be first)
-		if len(receivedEvents) > 0 {
-			assert.Equal(t, string(stripe.EventTypeCustomerSubscriptionCreated), receivedEvents[0], "First event should be subscription.created")
+		if len(eventTypes) > 0 {
+			assert.Equal(t, string(stripe.EventTypeCustomerSubscriptionCreated), eventTypes[0], "First event should be subscription.created")
 		}
 	})
 	
@@ -1230,10 +1286,6 @@ func TestHandlerEdgeCases(t *testing.T) {
 	})
 }
 
-// Helper function
-func strPtr(s string) *string {
-	return &s
-}
 
 // TestListHandlers tests all list endpoint handlers
 func TestListHandlers(t *testing.T) {
@@ -1607,6 +1659,48 @@ func TestListHandlers(t *testing.T) {
 }
 
 // TestSubscriptionCancellation tests subscription cancellation scenarios
+func TestTriggerInvoicePaidForSubscription(t *testing.T) {
+	s := setupTestServer(t, false)
+	wc := SetupWebhookCapture(t, s)
+	defer wc.Close()
+	
+	// Create a subscription directly in the gateway
+	sub := &api.Subscription{
+		Object:   api.SubscriptionObjectEnumSubscription,
+		Status:   api.SubscriptionStatusActive,
+		Livemode: false,
+	}
+	var custUnion api.Subscription_Customer
+	_ = custUnion.FromSubscriptionCustomer0("cus_test123")
+	sub.Customer = custUnion
+	
+	createdSub, err := s.gateway.CreateSubscription(sub)
+	require.NoError(t, err)
+	require.NotEmpty(t, createdSub.Id)
+	
+	// Call the function directly
+	s.triggerInvoicePaidForSubscription(createdSub.Id, api.InvoiceBillingReasonEnumSubscriptionCreate)
+	
+	// Wait for webhook delivery
+	time.Sleep(500 * time.Millisecond)
+	
+	// Verify invoice.paid was received
+	eventTypes := wc.GetEventTypes()
+	assert.Contains(t, eventTypes, "invoice.paid", "should fire invoice.paid")
+	
+	// Verify invoice has subscription in lines
+	invoiceEvent, found := wc.GetEventByType("invoice.paid")
+	if found {
+		data := invoiceEvent["data"].(map[string]any)
+		obj := data["object"].(map[string]any)
+		lines := obj["lines"].(map[string]any)
+		linesData := lines["data"].([]any)
+		require.Greater(t, len(linesData), 0)
+		lineItem := linesData[0].(map[string]any)
+		assert.Contains(t, lineItem, "subscription")
+	}
+}
+
 func TestSubscriptionCancellation(t *testing.T) {
 	t.Run("Immediate cancellation - DELETE subscription", func(t *testing.T) {
 		s := setupTestServer(t, false)
@@ -1822,6 +1916,160 @@ func TestSubscriptionPartialUpdates(t *testing.T) {
 	})
 }
 
+// TestPlanChangeWebhookWaterfall tests the webhook waterfall for subscription plan changes
+func TestPlanChangeWebhookWaterfall(t *testing.T) {
+	t.Run("create_prorations - fires subscription.updated and invoice.paid", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_old")
+
+		// Update subscription items (plan change)
+		pathParams := map[string]string{"id": sub.Id}
+		updateData := map[string]any{
+			"items": []map[string]any{
+				{"id": sub.Items.Data[0].Id, "price": "price_new"},
+			},
+			"proration_behavior": "create_prorations",
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.Equal(t, "price_new", updated.Items.Data[0].Price.Id)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		eventTypes := wc.GetEventTypes()
+
+		// Should fire subscription.updated first
+		assert.Contains(t, eventTypes, "customer.subscription.updated", "should fire subscription.updated")
+		// Should fire invoice.paid for proration
+		assert.Contains(t, eventTypes, "invoice.paid", "create_prorations should fire invoice.paid")
+		// Should NOT fire intermediate invoice events (portal only needs invoice.paid)
+		assert.NotContains(t, eventTypes, "invoice.created", "create_prorations should not fire invoice.created")
+		assert.NotContains(t, eventTypes, "invoice.finalized", "create_prorations should not fire invoice.finalized")
+		
+		// Verify no duplicate subscription.updated
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"), "should fire subscription.updated exactly once")
+	})
+
+	t.Run("always_invoice - fires full waterfall without duplicates", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_old")
+
+		// Update subscription items with always_invoice
+		pathParams := map[string]string{"id": sub.Id}
+		updateData := map[string]any{
+			"items": []map[string]any{
+				{"id": sub.Items.Data[0].Id, "price": "price_new"},
+			},
+			"proration_behavior": "always_invoice",
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.Equal(t, "price_new", updated.Items.Data[0].Price.Id)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		eventTypes := wc.GetEventTypes()
+
+		// Should fire full waterfall
+		assert.Contains(t, eventTypes, "customer.subscription.updated", "should fire subscription.updated")
+		assert.Contains(t, eventTypes, "invoice.created", "always_invoice should fire invoice.created")
+		assert.Contains(t, eventTypes, "invoice.finalized", "always_invoice should fire invoice.finalized")
+		assert.Contains(t, eventTypes, "charge.succeeded", "always_invoice should fire charge.succeeded")
+		assert.Contains(t, eventTypes, "invoice.paid", "always_invoice should fire invoice.paid")
+		
+		// Verify no duplicate events
+		for _, eventType := range []string{"customer.subscription.updated", "invoice.paid"} {
+			assert.Equal(t, 1, wc.CountEventType(eventType), "should fire %s exactly once", eventType)
+		}
+	})
+
+	t.Run("none - fires only subscription.updated", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_old")
+
+		// Update subscription items with none
+		pathParams := map[string]string{"id": sub.Id}
+		updateData := map[string]any{
+			"items": []map[string]any{
+				{"id": sub.Items.Data[0].Id, "price": "price_new"},
+			},
+			"proration_behavior": "none",
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.Equal(t, "price_new", updated.Items.Data[0].Price.Id)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		eventTypes := wc.GetEventTypes()
+
+		// Should only fire subscription.updated
+		assert.Contains(t, eventTypes, "customer.subscription.updated", "should fire subscription.updated")
+		assert.NotContains(t, eventTypes, "invoice.paid", "none should NOT fire invoice.paid")
+		assert.NotContains(t, eventTypes, "invoice.created", "none should NOT fire invoice.created")
+	})
+
+	t.Run("cancel_at_period_end and items together - no duplicate subscription.updated", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_old")
+
+		// Update both cancel_at_period_end and items
+		pathParams := map[string]string{"id": sub.Id}
+		updateData := map[string]any{
+			"cancel_at_period_end": true,
+			"items": []map[string]any{
+				{"id": sub.Items.Data[0].Id, "price": "price_new"},
+			},
+			"proration_behavior": "create_prorations",
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.True(t, updated.CancelAtPeriodEnd)
+		assert.Equal(t, "price_new", updated.Items.Data[0].Price.Id)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		// Should fire exactly one subscription.updated (from items update)
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"), "should fire subscription.updated exactly once even with both updates")
+	})
+}
+
 // TestExpandSubscription tests expand parameter support
 func TestExpandSubscription(t *testing.T) {
 	t.Run("Expand items.data.price.product", func(t *testing.T) {
@@ -1882,7 +2130,7 @@ func TestExpandSubscription(t *testing.T) {
 		customer := &api.Customer{
 			Object:   api.CustomerObjectEnumCustomer,
 			Livemode: false,
-			Email:    strPtr("test@example.com"),
+			Email:    new("test@example.com"),
 			Metadata: &m,
 		}
 		createdCustomer, err := s.gateway.CreateCustomer(customer)

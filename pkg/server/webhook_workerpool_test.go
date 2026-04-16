@@ -18,13 +18,38 @@ import (
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 )
 
+// setupWebhookService creates a fresh WebhookService for testing
+func setupWebhookService() *WebhookService {
+	return NewWebhookService(gateway.NewGateway(), "2020-08-27")
+}
+
+// testCreateOpts returns default CreateOpts for testing
+func testCreateOpts(url string) *CreateOpts {
+	return &CreateOpts{
+		URL:      url,
+		Enabled:  []string{"customer.created"},
+		Livemode: false,
+		Secret:   "whsec_test_secret",
+	}
+}
+
+// testEvent creates a stripe.Event for testing
+func testEvent(id, eventType string) *stripe.Event {
+	return &stripe.Event{
+		ID:         id,
+		Type:       stripe.EventType(eventType),
+		APIVersion: stripe.APIVersion,
+		Created:    time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix(),
+		Data:       &stripe.EventData{Raw: []byte(fmt.Sprintf(`{"id":%q}`, id)), Object: map[string]any{}},
+		Object:     "event",
+	}
+}
+
 // TestWebhookDeliveryOrder tests that webhook events are processed in order
 // due to the single worker in the worker pool.
 func TestWebhookDeliveryOrder(t *testing.T) {
-	gw := gateway.NewGateway()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 	// Create a test HTTP server that records the order of requests
 	var order []string
 	var orderNames []string
@@ -48,42 +73,20 @@ func TestWebhookDeliveryOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Create webhooks
-	opts1 := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-	opts2 := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-	opts3 := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w1, _ := service.CreateWebhook(opts1.URL, opts1)
-	w2, _ := service.CreateWebhook(opts2.URL, opts2)
-	w3, _ := service.CreateWebhook(opts3.URL, opts3)
+	w1, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
+	w2, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
+	w3, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 
 	// Send events in order
-	service.DeliverEvent(w1.Id, &stripe.Event{ID: "evt_001", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_001"}`), Object: map[string]any{}}, Object: "event"})
-	service.DeliverEvent(w2.Id, &stripe.Event{ID: "evt_002", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_002"}`), Object: map[string]any{}}, Object: "event"})
-	service.DeliverEvent(w3.Id, &stripe.Event{ID: "evt_003", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_003"}`), Object: map[string]any{}}, Object: "event"})
+	service.DeliverEvent(w1.Id, testEvent("evt_001", string(stripe.EventTypeCustomerCreated)))
+	service.DeliverEvent(w2.Id, testEvent("evt_002", string(stripe.EventTypeCustomerCreated)))
+	service.DeliverEvent(w3.Id, testEvent("evt_003", string(stripe.EventTypeCustomerCreated)))
 
 	// Wait for all deliveries to complete
 	time.Sleep(3 * time.Second)
 
-	// Verify order is correct (FIFO)
+	// Verify we received all 3 events
 	mutex.Lock()
-	// Since all events have the same generated ID, we can't verify by ID.
-	// But we can verify that we received all 3 events.
 	if len(order) != 3 {
 		t.Errorf("Expected 3 events, got %d", len(order))
 	}
@@ -92,16 +95,13 @@ func TestWebhookDeliveryOrder(t *testing.T) {
 
 // TestWebhookRetry tests that webhook deliveries are retried on failure.
 func TestWebhookRetry(t *testing.T) {
-	gw := gateway.NewGateway()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
 	var attempts atomic.Int32
 	done := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
-		// Fail 2 times, then succeed
 		if attempts.Load() < 2 {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
@@ -111,82 +111,52 @@ func TestWebhookRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	opts := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w, _ := service.CreateWebhook(opts.URL, opts)
+	w, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 	require.NotNil(t, w)
 
-	// Send an event for the webhook to deliver
-	service.DeliverEvent(w.Id, &stripe.Event{ID: "evt_test", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_test"}`), Object: map[string]any{}}, Object: "event"})
+	service.DeliverEvent(w.Id, testEvent("evt_test", string(stripe.EventTypeCustomerCreated)))
 
-	// Wait for delivery to complete
 	select {
 	case <-done:
-		// Expected - delivery succeeded
 	case <-time.After(5 * time.Second):
 		t.Fatal("delivery did not complete in time")
 	}
 
-	// Verify it succeeded after retries
-	// Note: attempts is incremented before the first attempt
 	assert.Equal(t, int32(2), attempts.Load())
 }
 
 // TestWebhookRetryOnTimeout tests that webhook deliveries are retried on timeout.
 func TestWebhookRetryOnTimeout(t *testing.T) {
-	gw := gateway.NewGateway()
-
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
 	var attempts atomic.Int32
 	done := make(chan struct{})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempts.Add(1)
-		// Simulate a slow response
 		time.Sleep(100 * time.Millisecond)
 		close(done)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	opts := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w, _ := service.CreateWebhook(opts.URL, opts)
+	w, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 	require.NotNil(t, w)
 
-	// Send an event for the webhook to deliver
-	service.DeliverEvent(w.Id, &stripe.Event{ID: "evt_test", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_test"}`), Object: map[string]any{}}, Object: "event"})
+	service.DeliverEvent(w.Id, testEvent("evt_test", string(stripe.EventTypeCustomerCreated)))
 
-	// Wait for delivery to complete
 	select {
 	case <-done:
-		// Expected - delivery succeeded
 	case <-time.After(5 * time.Second):
 		t.Fatal("delivery did not complete in time")
 	}
 
-	// Verify at least one attempt was made
 	assert.GreaterOrEqual(t, attempts.Load(), int32(1))
 }
 
 // TestWebhookRetryBackoff tests that retry delays increase with each attempt.
 func TestWebhookRetryBackoff(t *testing.T) {
-	gw := gateway.NewGateway()
-
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
 	var attempts atomic.Int32
 	var timestamps []int64
@@ -205,64 +175,37 @@ func TestWebhookRetryBackoff(t *testing.T) {
 	}))
 	defer server.Close()
 
-	opts := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w, _ := service.CreateWebhook(opts.URL, opts)
+	w, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 	require.NotNil(t, w)
 
-	// Send an event for the webhook to deliver
-	service.DeliverEvent(w.Id, &stripe.Event{ID: "evt_test", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_test"}`), Object: map[string]any{}}, Object: "event"})
+	service.DeliverEvent(w.Id, testEvent("evt_test", string(stripe.EventTypeCustomerCreated)))
 
-	// Wait for delivery to complete
 	select {
 	case <-done:
-		// Expected - delivery completed
 	case <-time.After(10 * time.Second):
 		t.Fatal("delivery did not complete in time")
 	}
 
-	// Verify there were multiple attempts
 	assert.GreaterOrEqual(t, attempts.Load(), int32(2))
 
-	// Verify timestamps increase (backoff is happening)
 	mutex.Lock()
-	tsLen := len(timestamps)
-	if tsLen >= 3 {
+	if len(timestamps) >= 3 {
 		assert.True(t, timestamps[2] > timestamps[1], "retry should be delayed")
-	} else if tsLen >= 2 {
-		// At least two attempts mean retry happened
-		_ = timestamps[1]
 	}
 	mutex.Unlock()
 }
 
 // TestWebhookConcurrentDelivery tests that multiple deliveries can be sent concurrently.
 func TestWebhookConcurrentDelivery(t *testing.T) {
-	gw := gateway.NewGateway()
-
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate some work
 		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
-	opts := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w, _ := service.CreateWebhook(opts.URL, opts)
+	w, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 	require.NotNil(t, w)
 
 	// Send multiple events concurrently
@@ -271,7 +214,7 @@ func TestWebhookConcurrentDelivery(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			service.DeliverEvent(w.Id, &stripe.Event{ID: fmt.Sprintf("evt_%d", id), Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(fmt.Sprintf(`{"id": "evt_%d"}`, id)), Object: map[string]any{}}, Object: "event"})
+			service.DeliverEvent(w.Id, testEvent(fmt.Sprintf("evt_%d", id), string(stripe.EventTypeCustomerCreated)))
 		}(i)
 	}
 
@@ -281,10 +224,7 @@ func TestWebhookConcurrentDelivery(t *testing.T) {
 
 // TestWebhookServiceClose tests that Close gracefully stops the worker pool.
 func TestWebhookServiceClose(t *testing.T) {
-	gw := gateway.NewGateway()
-	service := NewWebhookService(gw, "2020-08-27")
-
-	// Close should not panic
+	service := setupWebhookService()
 	assert.NotPanics(t, func() {
 		service.Close()
 	})
@@ -292,10 +232,7 @@ func TestWebhookServiceClose(t *testing.T) {
 
 // TestWebhookSuccessfulDelivery tests a successful webhook delivery.
 func TestWebhookSuccessfulDelivery(t *testing.T) {
-	gw := gateway.NewGateway()
-
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw, "2020-08-27")
+	service := setupWebhookService()
 
 	var receivedBody bytes.Buffer
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -305,45 +242,29 @@ func TestWebhookSuccessfulDelivery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	opts := &CreateOpts{
-		URL:      server.URL,
-		Enabled:  []string{"customer.created"},
-		Livemode: false,
-		Secret:   "whsec_test_secret",
-	}
-
-	w, _ := service.CreateWebhook(opts.URL, opts)
+	w, _ := service.CreateWebhook(server.URL, testCreateOpts(server.URL))
 	require.NotNil(t, w)
 
-
-	result, err := service.DeliverEvent(w.Id, &stripe.Event{ID: "evt_test123", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion,Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id":"cus_test123"}`), Object: map[string]any{}}, Object: "event"})
+	result, err := service.DeliverEvent(w.Id, testEvent("evt_test123", string(stripe.EventTypeCustomerCreated)))
 	assert.NoError(t, err)
-	// 202 Accepted - means it's been queued for delivery
 	assert.Equal(t, 202, result.StatusCode)
 }
 
 func TestWebhookServiceNonblocking(t *testing.T) {
-	gw := gateway.NewGateway()
+	service := setupWebhookService()
 
-	apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
-	service := NewWebhookService(gw, "2020-08-27")
-
-	// This should not block - the delivery happens in the worker pool
 	start := time.Now()
-	service.DeliverEvent("nonexistent", &stripe.Event{ID: "evt_test", Type: stripe.EventTypeCustomerCreated, APIVersion: stripe.APIVersion, Created: apiTime, Data: &stripe.EventData{Raw: []byte(`{"id": "evt_test"}`), Object: map[string]any{}}, Object: "event"})
+	service.DeliverEvent("nonexistent", testEvent("evt_test", string(stripe.EventTypeCustomerCreated)))
 	duration := time.Since(start)
 
-	// Should return relatively quickly (within 500ms for retry attempts)
 	assert.Less(t, duration, 500*time.Millisecond)
 }
 
 // TestSubscriptionCancellationWebhooks tests webhook events for subscription cancellation
 func TestSubscriptionCancellationWebhooks(t *testing.T) {
 	t.Run("Immediate cancellation triggers subscription.deleted", func(t *testing.T) {
-		gw := gateway.NewGateway()
-		apiTime := time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+		service := setupWebhookService()
 
-		// Create test HTTP server that receives webhooks
 		var receivedEvents []string
 		var mutex sync.Mutex
 		done := make(chan struct{})
@@ -364,8 +285,6 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 		}))
 		defer server.Close()
 
-		// Create webhook endpoint
-		service := NewWebhookService(gw, "2020-08-27")
 		opts := &CreateOpts{
 			URL:      server.URL,
 			Enabled:  []string{"*"},
@@ -397,10 +316,11 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 				Created:            now,
 				CurrentPeriodStart: now,
 				CurrentPeriodEnd:   now + 2592000,
-				Price: api.Price{Id: "price_test", Object: api.PriceObjectEnumPrice},
+				Price:              api.Price{Id: "price_test", Object: api.PriceObjectEnumPrice},
 			},
 		}
 
+		gw := service.Gateway()
 		created, err := gw.CreateSubscription(sub)
 		require.NoError(t, err)
 
@@ -408,20 +328,12 @@ func TestSubscriptionCancellationWebhooks(t *testing.T) {
 		_, err = gw.CancelSubscription(created.Id)
 		require.NoError(t, err)
 
-		// Trigger webhook manually (simulating the handler behavior)
-		service.DeliverEvent(w.Id, &stripe.Event{
-			ID:          "evt_cancel",
-			Type:        stripe.EventTypeCustomerSubscriptionDeleted,
-			APIVersion:  stripe.APIVersion,
-			Created:     apiTime,
-			Data:        &stripe.EventData{Raw: []byte(`{"id":"sub_test_123"}`), Object: map[string]any{}},
-			Object:      "event",
-		})
+		// Trigger webhook manually
+		service.DeliverEvent(w.Id, testEvent("evt_cancel", string(stripe.EventTypeCustomerSubscriptionDeleted)))
 
 		// Wait for webhook delivery
 		select {
 		case <-done:
-			// Success
 		case <-time.After(5 * time.Second):
 			t.Fatal("webhook not received in time")
 		}
