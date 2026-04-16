@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stripe/stripe-go/v85"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stripe/stripe-go/v85"
 	"go.lumeweb.com/stripe-mock-server/pkg/gateway"
 	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
 	"go.lumeweb.com/stripe-mock-server/pkg/storage"
@@ -23,7 +23,7 @@ func setupWebhookTest(t *testing.T) *WebhookService {
 	webhookRepo := storage.NewInMemoryRepository[api.WebhookEndpoint]()
 	gw.SetWebhookRepo(webhookRepo)
 
-	return NewWebhookService(gw)
+	return NewWebhookService(gw, "2020-08-27")
 }
 
 // TestCreateWebhook tests webhook endpoint registration
@@ -114,7 +114,7 @@ func TestUpdateWebhook(t *testing.T) {
 	updates := &UpdateWebhookOpts{
 		Description: &[]string{"Updated webhook"}[0],
 		Secret:      &[]string{"whsec_new"}[0],
-		Metadata: map[string]string{"env": "prod"},
+		Metadata:    map[string]string{"env": "prod"},
 	}
 	updated, err := service.UpdateWebhook(created.Id, updates)
 	require.NoError(t, err)
@@ -152,13 +152,13 @@ func TestDeliverEvent(t *testing.T) {
 		// Verify the signature
 		assert.Equal(t, "application/json", r.Header.Get("Content-Type"))
 		assert.NotEmpty(t, r.Header.Get("Stripe-Signature"))
-		
+
 		// Read the payload
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		
+
 		// Return 200 OK
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -175,12 +175,12 @@ func TestDeliverEvent(t *testing.T) {
 	require.NoError(t, err)
 
 	CustomerCreated := &stripe.Event{
-		ID:       "evt_test123",
-		Type:     stripe.EventTypeCustomerCreated,
+		ID:         "evt_test123",
+		Type:       stripe.EventTypeCustomerCreated,
 		APIVersion: stripe.APIVersion,
-		Created:  1609459200,
+		Created:    1609459200,
 		Data: &stripe.EventData{
-			Raw: json.RawMessage(`{"id":"cus_test123","email":"test@example.com","name":"Test Customer"}`),
+			Raw:    json.RawMessage(`{"id":"cus_test123","email":"test@example.com","name":"Test Customer"}`),
 			Object: map[string]any{},
 		},
 		Object: "event",
@@ -206,12 +206,12 @@ func TestDeliverEvent_eventNotEnabled(t *testing.T) {
 	require.NoError(t, err)
 
 	CustomerCreated := &stripe.Event{
-		ID:       "evt_test123",
-		Type:     stripe.EventTypeCustomerCreated,
+		ID:         "evt_test123",
+		Type:       stripe.EventTypeCustomerCreated,
 		APIVersion: stripe.APIVersion,
-		Created:  1609459200,
+		Created:    1609459200,
 		Data: &stripe.EventData{
-			Raw: json.RawMessage(`{"id":"cus_test123"}`),
+			Raw:    json.RawMessage(`{"id":"cus_test123"}`),
 			Object: map[string]any{},
 		},
 		Object: "event",
@@ -226,12 +226,12 @@ func TestDeliverEvent_webhookNotFound(t *testing.T) {
 
 	// Try to deliver to a non-existent webhook
 	CustomerCreated := &stripe.Event{
-		ID:       "evt_test123",
-		Type:     stripe.EventTypeCustomerCreated,
+		ID:         "evt_test123",
+		Type:       stripe.EventTypeCustomerCreated,
 		APIVersion: stripe.APIVersion,
-		Created:  1609459200,
+		Created:    1609459200,
 		Data: &stripe.EventData{
-			Raw: json.RawMessage(`{"id":"cus_test123"}`),
+			Raw:    json.RawMessage(`{"id":"cus_test123"}`),
 			Object: map[string]any{},
 		},
 		Object: "event",
@@ -294,20 +294,20 @@ func isLivemode(r *http.Request) bool {
 func TestBuildWebhookEventIncrementingTimestamps(t *testing.T) {
 	// Reset the sequence for predictable testing
 	eventSequence.Store(0)
-	
+
 	// Build multiple events in quick succession
 	event1 := buildWebhookEvent(stripe.EventTypeCustomerCreated, []byte(`{"id":"cus_1"}`))
 	event2 := buildWebhookEvent(stripe.EventTypeCustomerUpdated, []byte(`{"id":"cus_1"}`))
 	event3 := buildWebhookEvent(stripe.EventTypeCustomerDeleted, []byte(`{"id":"cus_1"}`))
-	
+
 	// Verify timestamps are incrementing
 	assert.Less(t, event1.Created, event2.Created, "event1.Created < event2.Created")
 	assert.Less(t, event2.Created, event3.Created, "event2.Created < event3.Created")
-	
+
 	// Verify IDs are unique (they include the timestamp)
 	assert.NotEqual(t, event1.ID, event2.ID)
 	assert.NotEqual(t, event2.ID, event3.ID)
-	
+
 	// Verify timestamps are Unix seconds in reasonable range
 	now := time.Now().Unix()
 	assert.GreaterOrEqual(t, event1.Created, now, "event1.Created should be >= now")
@@ -319,10 +319,10 @@ func TestBuildWebhookEventIncrementingTimestamps(t *testing.T) {
 func TestWebhookWaterfallIncrementingTimestamps(t *testing.T) {
 	// Reset the sequence for predictable testing
 	eventSequence.Store(0)
-	
+
 	// Simulate a waterfall of events (like subscription lifecycle)
 	baseTime := time.Now().Unix()
-	
+
 	events := []*stripe.Event{
 		buildWebhookEvent(stripe.EventTypeCustomerSubscriptionCreated, []byte(`{"id":"sub_1"}`)),
 		buildWebhookEvent(stripe.EventTypeInvoiceCreated, []byte(`{"id":"in_1"}`)),
@@ -331,19 +331,19 @@ func TestWebhookWaterfallIncrementingTimestamps(t *testing.T) {
 		buildWebhookEvent(stripe.EventTypeInvoicePaid, []byte(`{"id":"in_1"}`)),
 		buildWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, []byte(`{"id":"sub_1"}`)),
 	}
-	
+
 	// Verify all events have incrementing timestamps
 	for i := 1; i < len(events); i++ {
 		assert.Greater(t, events[i].Created, events[i-1].Created,
 			"events[%d].Created (%d) should be > events[%d].Created (%d)",
 			i, events[i].Created, i-1, events[i-1].Created)
-		
+
 		// Verify each timestamp is at least base + sequence
 		expectedMin := baseTime + int64(i+1)
 		assert.GreaterOrEqual(t, events[i].Created, expectedMin,
 			"events[%d].Created should be >= base + %d", i, i+1)
 	}
-	
+
 	// Verify the last event has a later timestamp than the first
 	assert.Greater(t, events[len(events)-1].Created, events[0].Created,
 		"last event should have later timestamp than first event")

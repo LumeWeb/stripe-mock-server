@@ -19,10 +19,10 @@ import (
 )
 
 const (
-	webhookIdPrefix   = "we_"
-	eventIdPrefix     = "evt_"
-	maxAttempts       = 5
-	WebhookStatusEnabled = "enabled"
+	webhookIdPrefix       = "we_"
+	eventIdPrefix         = "evt_"
+	maxAttempts           = 5
+	WebhookStatusEnabled  = "enabled"
 	WebhookStatusDisabled = "disabled"
 )
 
@@ -36,8 +36,9 @@ var eventSequence atomic.Int64
 
 // WebhookService manages webhook endpoints and delivers events to them
 type WebhookService struct {
-	gateway   *gateway.Gateway
+	gateway    *gateway.Gateway
 	workerPool *workerpool.WorkerPool
+	apiVersion string
 }
 
 // WebhookDeliveryTask represents a webhook delivery job
@@ -46,14 +47,15 @@ type WebhookDeliveryTask struct {
 	Event     *stripe.Event
 }
 
-// NewWebhookService creates a new webhook service
-func NewWebhookService(gw *gateway.Gateway) *WebhookService {
+// NewWebhookService creates a new webhook service with a default API version
+func NewWebhookService(gw *gateway.Gateway, apiVersion string) *WebhookService {
 	// Create worker pool with 1 worker to ensure sequential processing
 	wp := workerpool.New(1)
 
 	return &WebhookService{
-		gateway:   gw,
+		gateway:    gw,
 		workerPool: wp,
+		apiVersion: apiVersion,
 	}
 }
 
@@ -217,8 +219,18 @@ func (s *WebhookService) deliverToWebhook(task WebhookDeliveryTask) error {
 		return fmt.Errorf("webhook is not enabled")
 	}
 
+	// Use webhook's API version if set, otherwise use service default
+	apiVersion := s.apiVersion
+	if w.ApiVersion != nil {
+		apiVersion = *w.ApiVersion
+	}
+
+	// Clone and update event with appropriate API version before marshaling
+	event := *task.Event
+	event.APIVersion = apiVersion
+
 	// Marshal event to JSON (event already has Data.Raw populated)
-	payloadBytes, err := json.Marshal(task.Event)
+	payloadBytes, err := json.Marshal(&event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
@@ -253,7 +265,7 @@ func buildWebhookEvent(eventType stripe.EventType, resourceJSON []byte) *stripe.
 	// This ensures events in a waterfall can be sorted by creation time
 	seq := eventSequence.Add(1)
 	created := time.Now().Unix() + seq
-	
+
 	return &stripe.Event{
 		ID:         fmt.Sprintf("%s%d", eventIdPrefix, created),
 		Type:       eventType,

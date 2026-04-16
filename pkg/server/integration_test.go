@@ -9,17 +9,17 @@ import (
 
 	"go.uber.org/zap/zaptest"
 
-	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
-	"go.lumeweb.com/stripe-mock-server/pkg/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.lumeweb.com/stripe-mock-server/pkg/internal/gen/models/api"
+	"go.lumeweb.com/stripe-mock-server/pkg/spec"
 )
 
 // setupTestServer creates a minimal server for testing
 func setupTestServer(t *testing.T, verbose bool) *Server {
 	apiSpec, err := spec.GetSpec()
 	assert.NoError(t, err)
-	s, err := NewServer(apiSpec, verbose, zaptest.NewLogger(t))
+	s, err := NewServer(apiSpec, verbose, "2020-08-27", zaptest.NewLogger(t))
 	assert.NoError(t, err)
 	return s
 }

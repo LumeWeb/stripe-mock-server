@@ -59,20 +59,22 @@ type Server struct {
 	verbose        bool
 	webhook        *WebhookService
 	extendedLogger *zap.Logger
+	apiVersion     string
 }
 
 // NewServer creates a new Server
-func NewServer(spec *spec.Spec, verbose bool, logger *zap.Logger) (*Server, error) {
+func NewServer(spec *spec.Spec, verbose bool, apiVersion string, logger *zap.Logger) (*Server, error) {
 	s := &Server{
 		extendedLogger: logger,
 		mux:            http.NewServeMux(),
 		spec:           spec,
 		verbose:        verbose,
 		gateway:        gateway.NewGateway(),
+		apiVersion:     apiVersion,
 	}
 
 	// Initialize webhook service
-	s.webhook = NewWebhookService(s.gateway)
+	s.webhook = NewWebhookService(s.gateway, apiVersion)
 
 	// Register all OpenAPI routes with Go 1.22+ path variables
 	for path, verbs := range spec.Paths {
@@ -198,7 +200,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 
 	// Event 1: subscription.created (status: incomplete)
 	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionCreated, newWebhookSubscription(subscription))
-	
+
 	// Create a draft invoice for the subscription
 	invoiceId := "in_" + generator.RandomString(14)
 	draftStatus := api.InvoiceStatusDraft
@@ -211,7 +213,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		Created:   int(time.Now().Unix()),
 		Livemode:  false,
 	}
-	
+
 	// Event 2: invoice.created (status: draft)
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
@@ -219,7 +221,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 3: invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
 	createdInvoice.Status = &openStatus
@@ -228,7 +230,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 4: charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
 	charge := &api.Charge{
@@ -246,7 +248,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
-	
+
 	// Event 5: invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
@@ -255,7 +257,7 @@ func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 6: subscription.updated (status: active)
 	subscription.Status = api.SubscriptionStatusActive
 	if err := s.gateway.UpdateSubscription(subscription.Id, subscription); err != nil {
@@ -279,7 +281,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 	// In production, would sum all items with quantities
 	amount := 1000 // Simplified default
 	currency := "usd"
-	
+
 	// Event 1: invoice.created (status: draft)
 	invoiceId := "in_" + generator.RandomString(14)
 	draftStatus := api.InvoiceStatusDraft
@@ -295,26 +297,26 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		// Mark as renewal invoice
 		BillingReason: &renewReason,
 	}
-	
+
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
 		s.zap().Error("Failed to create invoice for renewal", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceCreated, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 2: invoice.finalized (status: open)
 	openStatus := api.InvoiceStatusOpen
 	createdInvoice.Status = &openStatus
 	// Add hosted_invoice_url (would be real URL in production)
 	// createdInvoice.HostedInvoiceUrl = "https://invoice.stripe.com/..."
-	
+
 	if err := s.gateway.UpdateInvoice(createdInvoice.Id, createdInvoice); err != nil {
 		s.zap().Error("Failed to update invoice status", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoiceFinalized, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 3: charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
 	charge := &api.Charge{
@@ -327,14 +329,14 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		Livemode: false,
 		// Invoice: createdInvoice.Id, // Link to invoice (if field exists)
 	}
-	
+
 	createdCharge, err := s.gateway.CreateCharge(charge)
 	if err != nil {
 		s.zap().Error("Failed to create charge", zap.Error(err))
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeChargeSucceeded, newWebhookCharge(createdCharge))
-	
+
 	// Event 4: invoice.paid (status: paid)
 	paidStatus := api.InvoiceStatusPaid
 	createdInvoice.Status = &paidStatus
@@ -343,7 +345,7 @@ func (s *Server) triggerSubscriptionRenewal(subscriptionID string) {
 		return
 	}
 	s.triggerWebhookEvent(stripe.EventTypeInvoicePaid, newWebhookInvoice(createdInvoice))
-	
+
 	// Event 5: customer.subscription.updated (current_period_end advanced)
 	// Subscription already updated in RenewSubscription gateway method
 	s.triggerWebhookEvent(stripe.EventTypeCustomerSubscriptionUpdated, newWebhookSubscription(subscription))
@@ -577,7 +579,7 @@ func writeResponse(w http.ResponseWriter, start time.Time, status int, data any)
 	if err != nil {
 		// Log writing error - but we don't have access to logger in helper function
 	}
-	
+
 	if !start.IsZero() {
 		// Debug info logged by caller
 	}
@@ -723,13 +725,13 @@ func (s *Server) triggerPlanChangeWithInvoice(subscription *api.Subscription, pr
 	// 4. charge.succeeded
 	chargeId := "ch_" + generator.RandomString(14)
 	charge := &api.Charge{
-		Id:        chargeId,
-		Object:    api.ChargeObjectEnumCharge,
-		Amount:    int(proration.CreditDue.IntPart()),
-		Currency:  "usd",
-		Status:    api.ChargeStatusSucceeded,
-		Created:   now,
-		Livemode:  false,
+		Id:       chargeId,
+		Object:   api.ChargeObjectEnumCharge,
+		Amount:   int(proration.CreditDue.IntPart()),
+		Currency: "usd",
+		Status:   api.ChargeStatusSucceeded,
+		Created:  now,
+		Livemode: false,
 	}
 	if _, err := s.gateway.CreateCharge(charge); err != nil {
 		s.zap().Error("Failed to create charge", zap.Error(err))
