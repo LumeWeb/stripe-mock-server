@@ -219,6 +219,35 @@ func (g *Gateway) CompleteCheckoutSession(id string) (*api.CheckoutSession, erro
 	*session.Status = api.CheckoutSessionStatusComplete
 	session.PaymentStatus = "paid"
 
+	// If mode is subscription, create a subscription and link it
+	if session.Mode == api.CheckoutSessionModeEnumSubscription {
+		// Extract customer ID if present
+		var customerID string
+		if session.Customer != nil {
+			customerID, _ = session.Customer.AsCheckoutSessionCustomer0()
+		}
+
+		// Create subscription
+		sub := &api.Subscription{
+			Object:   api.SubscriptionObjectEnumSubscription,
+			Status:   api.SubscriptionStatusActive,
+			Livemode: session.Livemode,
+		}
+		if customerID != "" {
+			var custUnion api.Subscription_Customer
+			custUnion.FromSubscriptionCustomer0(customerID)
+			sub.Customer = custUnion
+		}
+
+		createdSub, err := g.CreateSubscription(sub)
+		if err == nil {
+			// Link subscription to session
+			var subUnion api.CheckoutSession_Subscription
+			subUnion.FromCheckoutSessionSubscription0(createdSub.Id)
+			session.Subscription = &subUnion
+		}
+	}
+
 	// Save updated session
 	err = g.sessionRepo.Update(id, *session)
 	if err != nil {

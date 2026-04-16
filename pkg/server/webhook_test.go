@@ -357,7 +357,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "cs_test123",
 			Object: "checkout.session",
 		}
-		wrapper := newWebhookCheckoutSession(session)
+		wrapper := newWebhookCheckoutSession(session, nil)
 		
 		// Serialize the wrapper
 		jsonBytes, err := json.Marshal(wrapper)
@@ -375,7 +375,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "sub_test123",
 			Object: "subscription",
 		}
-		wrapper := newWebhookSubscription(sub)
+		wrapper := newWebhookSubscription(sub, nil)
 		
 		jsonBytes, err := json.Marshal(wrapper)
 		require.NoError(t, err)
@@ -389,7 +389,7 @@ func TestWebhookObjectSerialization(t *testing.T) {
 			Id:     "cus_test123",
 			Object: "customer",
 		}
-		wrapper := newWebhookCustomer(customer)
+		wrapper := newWebhookCustomer(customer, nil)
 		
 		jsonBytes, err := json.Marshal(wrapper)
 		require.NoError(t, err)
@@ -439,9 +439,9 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		session := &api.CheckoutSession{
 			Id:     "cs_test_data_check",
 			Object: "checkout.session",
-			Status: ptrTo(api.CheckoutSessionStatusComplete),
+			Status: new(api.CheckoutSessionStatusComplete),
 		}
-		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session)))
+		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, mustMarshal(newWebhookCheckoutSession(session, nil)))
 
 		_, err := service.DeliverEvent(webhook.Id, event)
 		require.NoError(t, err)
@@ -466,9 +466,9 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		customer := &api.Customer{
 			Id:     "cus_test_data_check",
 			Object: "customer",
-			Email:  ptrTo("test@example.com"),
+			Email:  new("test@example.com"),
 		}
-		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer)))
+		event := buildWebhookEvent(stripe.EventTypeCustomerCreated, mustMarshal(newWebhookCustomer(customer, nil)))
 
 		_, err := service.DeliverEvent(webhook.Id, event)
 		require.NoError(t, err)
@@ -485,9 +485,69 @@ func TestWebhookPayloadContainsResourceData(t *testing.T) {
 		assert.Equal(t, "cus_test_data_check", objMap["id"], "data.object.id should be set")
 		assert.Equal(t, "customer", objMap["object"], "data.object.object should be set")
 	})
+
+	// Test realistic flow: checkout.session.completed with auto-created subscription
+	t.Run("checkout.session.completed has expanded subscription", func(t *testing.T) {
+		receivedPayloads = nil
+
+		gw := service.Gateway()
+
+		// Create a checkout session in subscription mode (simulates real creation)
+		openStatus := api.CheckoutSessionStatusOpen
+		session := &api.CheckoutSession{
+			Object:            api.CheckoutSessionObjectEnumCheckoutSession,
+			Status:            &openStatus,
+			Mode:              api.CheckoutSessionModeEnumSubscription,
+			ClientReferenceId: new("12345"),
+			Livemode:          true,
+		}
+		created, err := gw.CreateCheckoutSession(session)
+		require.NoError(t, err)
+
+		// Complete the session (this creates a subscription automatically)
+		completed, err := gw.CompleteCheckoutSession(created.Id)
+		require.NoError(t, err)
+		require.NotNil(t, completed.Subscription, "completed session should have subscription")
+
+		// Create webhook wrapper with gateway (triggers expansion during marshal)
+		wrapper := newWebhookCheckoutSession(completed, gw)
+
+		// Marshal to trigger expansion
+		jsonBytes, err := json.Marshal(wrapper)
+		require.NoError(t, err)
+
+		// Build the webhook event
+		event := buildWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, jsonBytes)
+
+		_, err = service.DeliverEvent(webhook.Id, event)
+		require.NoError(t, err)
+
+		time.Sleep(500 * time.Millisecond)
+
+		payloadsMutex.Lock()
+		defer payloadsMutex.Unlock()
+		require.Len(t, receivedPayloads, 1)
+
+		// Verify the data.object contains expanded subscription
+		dataObj := receivedPayloads[0]["data"].(map[string]any)["object"]
+		objMap, ok := dataObj.(map[string]any)
+		require.True(t, ok, "data.object should be a map")
+
+		// Verify subscription is expanded (object, not string ID)
+		subField := objMap["subscription"]
+		subMap, ok := subField.(map[string]any)
+		require.True(t, ok, "subscription should be an expanded object, not a string ID")
+		assert.NotEmpty(t, subMap["id"], "subscription.id should be set")
+		assert.Equal(t, "subscription", subMap["object"], "subscription.object should be set")
+
+		// Verify mode is subscription
+		assert.Equal(t, "subscription", objMap["mode"], "mode should be subscription")
+
+		// Verify client_reference_id is preserved
+		assert.Equal(t, "12345", objMap["client_reference_id"], "client_reference_id should be preserved")
+	})
 }
 
-func ptrTo[T any](v T) *T { return &v }
 
 func mustMarshal(v interface{}) []byte {
 	b, err := json.Marshal(v)
