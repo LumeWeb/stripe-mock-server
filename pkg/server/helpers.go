@@ -3,8 +3,12 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/v2"
@@ -49,12 +53,16 @@ func GetStringMap(m map[string]any, key string) map[string]any {
 }
 
 // GetMapSlice retrieves a slice of map[string]any from a map.
+// Handles three forms:
+//   - []any or []map[string]any (from JSON or Go literals)
+//   - map[string]any with numeric keys (from Rack-style form encoding: line_items[0][price]=...)
 func GetMapSlice(m map[string]any, key string) []map[string]any {
 	k := newKoanfFromMap(m)
 	var result []map[string]any
 	if slice := k.Get(key); slice != nil {
 		// Handle []any (from JSON unmarshal)
 		if s, ok := slice.([]any); ok {
+			zap.L().Debug("GetMapSlice: found []any", zap.String("key", key), zap.Int("len", len(s)))
 			for _, item := range s {
 				if m, ok := item.(map[string]any); ok {
 					result = append(result, m)
@@ -63,7 +71,41 @@ func GetMapSlice(m map[string]any, key string) []map[string]any {
 		}
 		// Handle []map[string]any (from Go literal)
 		if s, ok := slice.([]map[string]any); ok {
+			zap.L().Debug("GetMapSlice: found []map[string]any", zap.String("key", key), zap.Int("len", len(s)))
 			result = append(result, s...)
+		}
+		// Handle map[string]any with numeric keys (Rack-style encoding from param package)
+		// e.g. line_items[0][price]=price_xxx → {"line_items": {"0": {"price": "price_xxx"}}}
+		if m, ok := slice.(map[string]any); ok {
+			zap.L().Debug("GetMapSlice: found map with numeric keys (Rack-style)", zap.String("key", key), zap.Int("len", len(m)), zap.Any("keys", func() []string {
+				keys := make([]string, 0, len(m))
+				for k := range m {
+					keys = append(keys, k)
+				}
+				return keys
+			}()))
+			result = sortedMapSlice(m)
+		}
+	} else {
+		zap.L().Debug("GetMapSlice: key not found", zap.String("key", key))
+	}
+	zap.L().Debug("GetMapSlice: result", zap.String("key", key), zap.Int("result_count", len(result)))
+	return result
+}
+
+// sortedMapSlice converts a map with numeric-string keys into a sorted slice of values.
+func sortedMapSlice(m map[string]any) []map[string]any {
+	keys := make([]int, 0, len(m))
+	for k := range m {
+		if n, err := strconv.Atoi(k); err == nil {
+			keys = append(keys, n)
+		}
+	}
+	sort.Ints(keys)
+	result := make([]map[string]any, 0, len(keys))
+	for _, k := range keys {
+		if v, ok := m[strconv.Itoa(k)].(map[string]any); ok {
+			result = append(result, v)
 		}
 	}
 	return result
@@ -197,7 +239,7 @@ func buildCustomer(id string, data map[string]any) *api.Customer {
 	c := &api.Customer{
 		Id:       id,
 		Object:   api.CustomerObjectEnumCustomer,
-		Livemode: false,
+		Livemode: true,
 	}
 
 	if email := GetString(data, "email"); email != "" {
@@ -328,7 +370,7 @@ func buildProduct(id string, data map[string]any) *api.Product {
 	p := &api.Product{
 		Id:                id,
 		Object:            api.ProductObjectEnumProduct,
-		Livemode:          false,
+		Livemode:          true,
 		Active:            true,
 		Created:           now,
 		Updated:           now,
@@ -391,7 +433,7 @@ func buildPrice(id string, data map[string]any) *api.Price {
 	p := &api.Price{
 		Id:       id,
 		Object:   api.PriceObjectEnumPrice,
-		Livemode: false,
+		Livemode: true,
 		Active:   true,
 		Created:  now,
 		Metadata: map[string]string{},
@@ -412,6 +454,9 @@ func buildPrice(id string, data map[string]any) *api.Price {
 	}
 
 	if product := GetString(data, "product"); product != "" {
+		zap.L().Debug("buildPrice: setting product reference",
+			zap.String("product_id", product),
+		)
 		var pp api.Price_Product
 		_ = pp.FromPriceProduct0(product)
 		p.Product = pp
@@ -475,7 +520,7 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 	s := &api.CheckoutSession{
 		Id:            id,
 		Object:        api.CheckoutSessionObjectEnumCheckoutSession,
-		Livemode:      false,
+		Livemode:      true,
 		ExpiresAt:     now + 86400, // 24 hours from now
 		Created:       now,
 		PaymentStatus: api.CheckoutSessionPaymentStatusUnpaid,
@@ -550,6 +595,9 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 
 	// Handle line_items for subscription mode
 	if lineItems := GetMapSlice(data, "line_items"); len(lineItems) > 0 {
+		zap.L().Debug("buildCheckoutSession: parsing line_items",
+			zap.Int("line_item_count", len(lineItems)),
+		)
 		items := make([]api.Item, len(lineItems))
 		for i, item := range lineItems {
 			items[i] = api.Item{
@@ -557,6 +605,11 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 				Object: api.ItemObjectEnumItem,
 			}
 			if priceID := GetString(item, "price"); priceID != "" {
+				zap.L().Debug("buildCheckoutSession: line_item price",
+					zap.Int("index", i),
+					zap.String("price_id", priceID),
+					zap.Int64("quantity", GetInt64(item, "quantity")),
+				)
 				var priceUnion api.Item_Price
 				// Store minimal price reference with ID
 				// Actual price attributes will be fetched from storage
@@ -567,6 +620,10 @@ func buildCheckoutSession(id string, data map[string]any) *api.CheckoutSession {
 				}
 				_ = priceUnion.FromPrice(price)
 				items[i].Price = &priceUnion
+			} else {
+				zap.L().Warn("buildCheckoutSession: line_item has no price_id",
+					zap.Int("index", i),
+			)
 			}
 			if qty := GetInt64(item, "quantity"); qty != 0 {
 				q := int(qty)
@@ -795,7 +852,7 @@ func buildSubscription(id string, data map[string]any) *api.Subscription {
 		Id:       id,
 		Object:   api.SubscriptionObjectEnumSubscription,
 		Created:  now,
-		Livemode: false,
+		Livemode: true,
 		Status:   api.SubscriptionStatusIncomplete,
 	}
 	
@@ -821,7 +878,7 @@ func buildSubscription(id string, data map[string]any) *api.Subscription {
 						Object:   api.PriceObjectEnumPrice,
 						Currency: "usd",
 						Active:   true,
-						Livemode: false,
+						Livemode: true,
 						Type:     api.PriceTypeEnumRecurring,
 					},
 				}

@@ -70,7 +70,7 @@ func (e *CheckoutSessionExpander) expandSubscription(gw *gateway.Gateway) {
 			Id:       id,
 			Object:   api.SubscriptionObjectEnumSubscription,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 		}
 	}
 
@@ -97,7 +97,7 @@ func (e *CheckoutSessionExpander) expandInvoice(gw *gateway.Gateway) {
 			Id:       id,
 			Object:   api.InvoiceObjectEnumInvoice,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 		}
 	}
 

@@ -66,7 +66,7 @@ func (e *SubscriptionExpander) expandLatestInvoice(gw *gateway.Gateway) {
 			Id:       id,
 			Object:   api.InvoiceObjectEnumInvoice,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 		}
 	}
 
@@ -99,7 +99,7 @@ func (e *SubscriptionExpander) expandPriceProduct(price *api.Price, gw *gateway.
 			Id:       id,
 			Object:   api.ProductObjectEnumProduct,
 			Created:  int(time.Now().Unix()),
-			Livemode: false,
+			Livemode: true,
 			Metadata: map[string]string{},
 		}
 	}

@@ -21,6 +21,8 @@ func setupTestServer(t *testing.T, verbose bool) *Server {
 	assert.NoError(t, err)
 	s, err := NewServer(apiSpec, verbose, "2020-08-27", zaptest.NewLogger(t))
 	assert.NoError(t, err)
+	// Register custom Stripe handlers so HTTP routes work in tests
+	assert.NoError(t, s.RegisterStripeHandlers())
 	return s
 }
 
@@ -234,22 +236,14 @@ func TestServer_DoubleSlashFix(t *testing.T) {
 func TestServer_StatefulOperations(t *testing.T) {
 	s := setupTestServer(t, false)
 
-	// Test customer creation
-	s.RegisterCustomHandler(http.MethodPost, "/v1/customers", func(r *http.Request, pathParams map[string]string, data map[string]any) (int, any, error) {
-		customer := data
-		customer["object"] = "customer"
-		customer["created"] = 0
-		customer["email"] = data["email"]
-		return http.StatusCreated, customer, nil
-	})
-
+	// Test customer creation via the already registered custom handler
 	reqBody := map[string]any{"email": "test@example.com"}
 	reqBodyBytes, _ := json.Marshal(reqBody)
 
 	rec, req := makeRequest(http.MethodPost, "/v1/customers", reqBodyBytes, "Bearer sk_test_123")
 	s.HandleRequest(rec, req)
 
-	assert.Equal(t, http.StatusCreated, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
 	response := parseResponseBody(t, rec)
 	assert.Equal(t, "test@example.com", response["email"])
 	assert.Equal(t, "customer", response["object"])

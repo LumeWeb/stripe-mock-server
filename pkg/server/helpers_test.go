@@ -208,6 +208,45 @@ func TestGetMapSlice(t *testing.T) {
 			key:      "items",
 			expected: nil,
 		},
+		{
+			name: "Rack-style encoding with numeric keys",
+			m: map[string]any{
+				"line_items": map[string]any{
+					"0": map[string]any{"price": "price_abc", "quantity": "1"},
+					"1": map[string]any{"price": "price_def", "quantity": "2"},
+				},
+			},
+			key: "line_items",
+			expected: []map[string]any{
+				{"price": "price_abc", "quantity": "1"},
+				{"price": "price_def", "quantity": "2"},
+			},
+		},
+		{
+			name: "Rack-style encoding single item",
+			m: map[string]any{
+				"line_items": map[string]any{
+					"0": map[string]any{"price": "price_abc"},
+				},
+			},
+			key: "line_items",
+			expected: []map[string]any{
+				{"price": "price_abc"},
+			},
+		},
+		{
+			name: "Rack-style encoding with non-numeric keys ignored",
+			m: map[string]any{
+				"line_items": map[string]any{
+					"0": map[string]any{"price": "price_abc"},
+					"foo": map[string]any{"price": "price_def"},
+				},
+			},
+			key: "line_items",
+			expected: []map[string]any{
+				{"price": "price_abc"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -787,7 +826,7 @@ func TestBuildCustomer(t *testing.T) {
 			assert.NotNil(t, customer)
 			assert.Equal(t, tt.id, customer.Id)
 			assert.Equal(t, "customer", string(customer.Object))
-			assert.False(t, customer.Livemode)
+			assert.True(t, customer.Livemode)
 
 			// Check basic fields
 			if email, ok := tt.data["email"].(string); ok && email != "" {
@@ -944,7 +983,7 @@ func TestBuildProduct(t *testing.T) {
 			assert.NotNil(t, product)
 			assert.Equal(t, tt.id, product.Id)
 			assert.Equal(t, "product", string(product.Object))
-			assert.False(t, product.Livemode)
+			assert.True(t, product.Livemode)
 			assert.NotNil(t, product.Created)
 			assert.NotNil(t, product.Updated)
 
@@ -1126,7 +1165,7 @@ func TestBuildPrice(t *testing.T) {
 			assert.NotNil(t, price)
 			assert.Equal(t, tt.id, price.Id)
 			assert.Equal(t, "price", string(price.Object))
-			assert.False(t, price.Livemode)
+			assert.True(t, price.Livemode)
 			assert.True(t, price.Active)
 			assert.NotNil(t, price.Created)
 
@@ -1329,7 +1368,7 @@ func TestBuildCheckoutSession(t *testing.T) {
 			assert.NotNil(t, session)
 			assert.Equal(t, tt.id, session.Id)
 			assert.Equal(t, "checkout.session", string(session.Object))
-			assert.False(t, session.Livemode)
+			assert.True(t, session.Livemode)
 			assert.NotNil(t, session.Created)
 			assert.NotNil(t, session.ExpiresAt)
 			assert.NotNil(t, session.PaymentMethodCollection)

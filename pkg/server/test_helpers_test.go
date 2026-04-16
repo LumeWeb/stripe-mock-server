@@ -38,7 +38,7 @@ func SetupWebhookCapture(t *testing.T, s *Server) *WebhookCapture {
 	opts := &CreateOpts{
 		URL:      testServer.URL,
 		Enabled:  []string{"*"},
-		Livemode: false,
+		Livemode: true,
 		Secret:   "whsec_test_secret",
 	}
 

@@ -7,7 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"go.lumeweb.com/stripe-mock-server/pkg/generator")
+	"go.uber.org/zap"
+	"go.lumeweb.com/stripe-mock-server/pkg/generator"
+)
 
 // ErrNotFound is returned when a resource is not found
 var ErrNotFound = errors.New("not found")
@@ -74,6 +76,11 @@ func (r *InMemoryRepository[T]) Create(data T) (string, error) {
 	}
 
 	r.resources[resourceType][id] = jsonBytes
+	zap.L().Debug("storage.Create",
+		zap.String("type", typename),
+		zap.String("id", id),
+		zap.Int("json_size", len(jsonBytes)),
+	)
 	return id, nil
 }
 
@@ -121,52 +128,95 @@ func (r *InMemoryRepository[T]) CreateWithID(id string, data T) error {
 
 // Get retrieves a resource by ID
 func (r *InMemoryRepository[T]) Get(id string) (*T, error) {
+	typename := typeToString[T]()
 	resourceType := r.extractPrefixFromType()
 	lock := r.getLock(resourceType)
 	lock.RLock()
 	defer lock.RUnlock()
 
 	if r.resources[resourceType] == nil {
+		zap.L().Debug("storage.Get: resource type not initialized",
+			zap.String("type", typename),
+			zap.String("id", id),
+		)
 		return nil, ErrNotFound
 	}
 
 	jsonData, ok := r.resources[resourceType][id]
 	if !ok {
+		keys := make([]string, 0, len(r.resources[resourceType]))
+		for k := range r.resources[resourceType] {
+			keys = append(keys, k)
+		}
+		zap.L().Debug("storage.Get: not found",
+			zap.String("type", typename),
+			zap.String("id", id),
+			zap.Int("total_stored", len(keys)),
+			zap.Strings("stored_ids", keys),
+		)
 		return nil, ErrNotFound
 	}
 
 	// Unmarshal JSON to T
 	var result T
 	if err := json.Unmarshal(jsonData, &result); err != nil {
+		zap.L().Debug("storage.Get: failed to unmarshal",
+			zap.String("type", typename),
+			zap.String("id", id),
+			zap.Error(err),
+		)
 		return nil, err
 	}
 
+	zap.L().Debug("storage.Get: found",
+		zap.String("type", typename),
+		zap.String("id", id),
+	)
 	return &result, nil
 }
 
 // Update updates an existing resource
 func (r *InMemoryRepository[T]) Update(id string, data T) error {
+	typename := typeToString[T]()
 	resourceType := r.extractPrefixFromType()
 	lock := r.getLock(resourceType)
 	lock.Lock()
 	defer lock.Unlock()
 
 	if r.resources[resourceType] == nil {
+		zap.L().Debug("storage.Update: resource type not initialized",
+			zap.String("type", typename),
+			zap.String("id", id),
+		)
 		return ErrNotFound
 	}
 
 	_, ok := r.resources[resourceType][id]
 	if !ok {
+		zap.L().Debug("storage.Update: not found",
+			zap.String("type", typename),
+			zap.String("id", id),
+		)
 		return ErrNotFound
 	}
 
 	// Marshal new data directly and store
 	newJson, err := json.Marshal(data)
 	if err != nil {
+		zap.L().Debug("storage.Update: failed to marshal",
+			zap.String("type", typename),
+			zap.String("id", id),
+			zap.Error(err),
+		)
 		return err
 	}
 
 	r.resources[resourceType][id] = newJson
+	zap.L().Debug("storage.Update",
+		zap.String("type", typename),
+		zap.String("id", id),
+		zap.Int("json_size", len(newJson)),
+	)
 	return nil
 }
 

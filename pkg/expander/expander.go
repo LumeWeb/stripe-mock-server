@@ -14,7 +14,7 @@ func createMinimalCustomer(id string) *api.Customer {
 		Id:       id,
 		Object:   api.CustomerObjectEnumCustomer,
 		Created:  int(time.Now().Unix()),
-		Livemode: false,
+		Livemode: true,
 		Metadata: &m,
 	}
 }
