@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stripe/stripe-go/v85"
@@ -60,6 +61,7 @@ type Server struct {
 	webhook        *WebhookService
 	extendedLogger *zap.Logger
 	apiVersion     string
+	wg             sync.WaitGroup // tracks async goroutines for testing
 }
 
 // NewServer creates a new Server
@@ -93,6 +95,12 @@ func NewServer(spec *spec.Spec, verbose bool, apiVersion string, logger *zap.Log
 	s.mux.HandleFunc("POST /v1/reset", s.handleReset)
 
 	return s, nil
+}
+
+// Wait blocks until all async goroutines complete.
+// Useful in tests to prevent race conditions on logger.
+func (s *Server) Wait() {
+	s.wg.Wait()
 }
 
 // zap returns the logger to use (either injected or global)
@@ -208,6 +216,59 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 				zap.String("webhook_id", w.Id),
 				zap.String("webhook_url", w.Url),
 				zap.String("resource_id", obj.GetID()),
+			)
+			_, err := s.webhook.DeliverEvent(w.Id, event)
+			if err != nil {
+				s.zap().Error("Failed to deliver webhook event",
+					zap.String("webhook_id", w.Id),
+					zap.String("event_type", string(eventType)),
+					zap.Error(err))
+			} else {
+				deliveredCount++
+				s.zap().Info("Webhook event delivered successfully",
+					zap.String("event_type", string(eventType)),
+					zap.String("webhook_id", w.Id),
+				)
+			}
+		}
+	}
+
+	s.zap().Info("Webhook event trigger complete",
+		zap.String("event_type", string(eventType)),
+		zap.Int("webhooks_subscribed", len(webhooks)),
+		zap.Int("events_delivered", deliveredCount),
+		zap.Int("events_skipped", len(webhooks)-deliveredCount),
+	)
+}
+
+// triggerWebhookEventBytes triggers webhook events using pre-marshaled JSON bytes.
+// This avoids race conditions when the resource might be modified concurrently.
+func (s *Server) triggerWebhookEventBytes(eventType stripe.EventType, resourceType, resourceID string, resourceJSON []byte) {
+	s.zap().Info("Triggering webhook event",
+		zap.String("event_type", string(eventType)),
+		zap.String("resource_type", resourceType),
+		zap.String("resource_id", resourceID),
+	)
+
+	// Get all webhooks that are subscribed to this event type
+	webhooks, err := s.webhook.ListWebhooks(100, "")
+	if err != nil {
+		s.zap().Error("Failed to list webhooks", zap.Error(err))
+		return
+	}
+
+	// Build event using helper
+	event := buildWebhookEvent(eventType, resourceJSON)
+
+	// Deliver to each subscribed webhook
+	deliveredCount := 0
+	for _, w := range webhooks {
+		if s.webhook.IsEventEnabled(w, eventType) {
+			s.zap().Info("Delivering webhook event",
+				zap.String("event_type", string(eventType)),
+				zap.String("webhook_id", w.Id),
+				zap.String("webhook_url", w.Url),
+				zap.String("resource_id", resourceID),
 			)
 			_, err := s.webhook.DeliverEvent(w.Id, event)
 			if err != nil {

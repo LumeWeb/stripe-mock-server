@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -108,7 +109,11 @@ func (s *Server) handleCreateCustomer(r *http.Request, pathParams map[string]str
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypeCustomerCreated, newWebhookCustomer(created, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypeCustomerCreated, newWebhookCustomer(created, s.gateway))
+	}()
 	return responseStatus, responseData, err
 }
 
@@ -131,7 +136,11 @@ func (s *Server) handleUpdateCustomer(r *http.Request, pathParams map[string]str
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, existing, nil
-	go s.triggerWebhookEvent(stripe.EventTypeCustomerUpdated, newWebhookCustomer(existing, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypeCustomerUpdated, newWebhookCustomer(existing, s.gateway))
+	}()
 	return responseStatus, responseData, err
 }
 
@@ -193,7 +202,14 @@ func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[s
 	)
 
 	// Trigger checkout.session.completed webhook asynchronously
-	go s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated, s.gateway))
+	// Marshal to JSON now to avoid racing with writeResponse
+	sessionJSON, _ := json.Marshal(updated)
+	sessionID := updated.Id
+	s.wg.Add(1)
+	go func(jsonBytes []byte, id string) {
+		defer s.wg.Done()
+		s.triggerWebhookEventBytes(stripe.EventTypeCheckoutSessionCompleted, "checkout.session", id, jsonBytes)
+	}(sessionJSON, sessionID)
 
 	// For subscription-mode checkouts, fire invoice.paid to activate the subscription
 	// This follows Stripe's actual behavior where invoice.paid follows checkout completion
@@ -218,7 +234,9 @@ func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[s
 		}
 
 		// Fire invoice.paid asynchronously
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			// Small delay to ensure checkout.session.completed is processed first
 			time.Sleep(100 * time.Millisecond)
 			s.triggerInvoicePaidForSubscription(subID, api.InvoiceBillingReasonEnumSubscriptionCreate)
@@ -342,7 +360,11 @@ func (s *Server) handleCreateProduct(r *http.Request, pathParams map[string]stri
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypeProductCreated, newWebhookProduct(created, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypeProductCreated, newWebhookProduct(created, s.gateway))
+	}()
 	return responseStatus, responseData, err
 }
 
@@ -353,7 +375,11 @@ func (s *Server) handleCreatePrice(r *http.Request, pathParams map[string]string
 		return http.StatusInternalServerError, nil, err
 	}
 	responseStatus, responseData, err := http.StatusOK, created, nil
-	go s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypePriceCreated, newWebhookPrice(created, s.gateway))
+	}()
 	return responseStatus, responseData, err
 }
 
@@ -399,7 +425,11 @@ func (s *Server) handleUpdateProduct(r *http.Request, pathParams map[string]stri
 		return http.StatusInternalServerError, nil, err
 	}
 
-	go s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing, s.gateway))
+	}()
 	return http.StatusOK, existing, nil
 }
 
@@ -699,7 +729,11 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 
 	// Trigger subscription.updated webhook (only for cancel_at_period_end changes)
 	if needsWebhook {
-		go s.triggerSubscriptionUpdate(sub)
+		s.wg.Add(1)
+		go func(s *Server, sub *api.Subscription) {
+			defer s.wg.Done()
+			s.triggerSubscriptionUpdate(sub)
+		}(s, sub)
 	}
 
 	return http.StatusOK, sub, nil
@@ -1020,7 +1054,11 @@ func (s *Server) handlePauseSubscription(r *http.Request, pathParams map[string]
 	}
 
 	// Trigger subscription.paused webhook
-	go s.triggerSubscriptionPaused(paused)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerSubscriptionPaused(paused)
+	}()
 
 	return http.StatusOK, paused, nil
 }
@@ -1043,7 +1081,11 @@ func (s *Server) handleResumeSubscription(r *http.Request, pathParams map[string
 	}
 
 	// Trigger subscription.resumed webhook
-	go s.triggerSubscriptionResumed(resumed)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerSubscriptionResumed(resumed)
+	}()
 
 	return http.StatusOK, resumed, nil
 }
