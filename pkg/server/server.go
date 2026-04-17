@@ -174,6 +174,13 @@ func (s *Server) RegisterCustomHandler(verb, path string, handler CustomHandlerF
 // This function looks up all webhooks that are subscribed to the event type
 // and delivers the event asynchronously using the worker pool.
 func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) {
+	// Log that we're triggering this webhook event
+	s.zap().Info("Triggering webhook event",
+		zap.String("event_type", string(eventType)),
+		zap.String("resource_type", obj.GetObject()),
+		zap.String("resource_id", obj.GetID()),
+	)
+
 	// Marshal resource to JSON bytes
 	resourceJSON, err := json.Marshal(obj)
 	if err != nil {
@@ -196,6 +203,12 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 	for _, w := range webhooks {
 		// Check if event type is enabled for this webhook
 		if s.webhook.IsEventEnabled(w, eventType) {
+			s.zap().Info("Delivering webhook event",
+				zap.String("event_type", string(eventType)),
+				zap.String("webhook_id", w.Id),
+				zap.String("webhook_url", w.Url),
+				zap.String("resource_id", obj.GetID()),
+			)
 			_, err := s.webhook.DeliverEvent(w.Id, event)
 			if err != nil {
 				s.zap().Error("Failed to deliver webhook event",
@@ -204,16 +217,20 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 					zap.Error(err))
 			} else {
 				deliveredCount++
+				s.zap().Info("Webhook event delivered successfully",
+					zap.String("event_type", string(eventType)),
+					zap.String("webhook_id", w.Id),
+				)
 			}
 		}
 	}
 
-	if s.verbose {
-		s.zap().Debug("Webhook trigger",
-			zap.String("event", string(eventType)),
-			zap.Int("events_delivered", deliveredCount),
-			zap.Int("webhooks_checked", len(webhooks)))
-	}
+	s.zap().Info("Webhook event trigger complete",
+		zap.String("event_type", string(eventType)),
+		zap.Int("webhooks_subscribed", len(webhooks)),
+		zap.Int("events_delivered", deliveredCount),
+		zap.Int("events_skipped", len(webhooks)-deliveredCount),
+	)
 }
 
 // triggerSubscriptionLifecycle triggers the webhook waterfall for subscription lifecycle
