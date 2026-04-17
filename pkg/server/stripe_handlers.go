@@ -62,6 +62,7 @@ func (s *Server) RegisterStripeHandlers() error {
 		{http.MethodGet, "/v1/subscriptions", s.handleListSubscriptions},
 		{http.MethodGet, "/v1/subscriptions/{id}", s.handleRetrieveSubscription},
 		{http.MethodPost, "/v1/subscriptions/{id}/renew", s.handleRenewSubscription},
+		{http.MethodPost, "/v1/subscriptions/{id}", s.handleUpdateSubscription},
 		{http.MethodPut, "/v1/subscriptions/{id}", s.handleUpdateSubscription},
 		{http.MethodDelete, "/v1/subscriptions/{id}", s.handleCancelSubscription},
 		{http.MethodPost, "/v1/subscriptions/{id}/expire", s.handleExpireSubscription},
