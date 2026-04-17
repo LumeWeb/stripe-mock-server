@@ -241,6 +241,59 @@ func (s *Server) triggerWebhookEvent(eventType stripe.EventType, obj APIObject) 
 	)
 }
 
+// triggerWebhookEventBytes triggers webhook events using pre-marshaled JSON bytes.
+// This avoids race conditions when the resource might be modified concurrently.
+func (s *Server) triggerWebhookEventBytes(eventType stripe.EventType, resourceType, resourceID string, resourceJSON []byte) {
+	s.zap().Info("Triggering webhook event",
+		zap.String("event_type", string(eventType)),
+		zap.String("resource_type", resourceType),
+		zap.String("resource_id", resourceID),
+	)
+
+	// Get all webhooks that are subscribed to this event type
+	webhooks, err := s.webhook.ListWebhooks(100, "")
+	if err != nil {
+		s.zap().Error("Failed to list webhooks", zap.Error(err))
+		return
+	}
+
+	// Build event using helper
+	event := buildWebhookEvent(eventType, resourceJSON)
+
+	// Deliver to each subscribed webhook
+	deliveredCount := 0
+	for _, w := range webhooks {
+		if s.webhook.IsEventEnabled(w, eventType) {
+			s.zap().Info("Delivering webhook event",
+				zap.String("event_type", string(eventType)),
+				zap.String("webhook_id", w.Id),
+				zap.String("webhook_url", w.Url),
+				zap.String("resource_id", resourceID),
+			)
+			_, err := s.webhook.DeliverEvent(w.Id, event)
+			if err != nil {
+				s.zap().Error("Failed to deliver webhook event",
+					zap.String("webhook_id", w.Id),
+					zap.String("event_type", string(eventType)),
+					zap.Error(err))
+			} else {
+				deliveredCount++
+				s.zap().Info("Webhook event delivered successfully",
+					zap.String("event_type", string(eventType)),
+					zap.String("webhook_id", w.Id),
+				)
+			}
+		}
+	}
+
+	s.zap().Info("Webhook event trigger complete",
+		zap.String("event_type", string(eventType)),
+		zap.Int("webhooks_subscribed", len(webhooks)),
+		zap.Int("events_delivered", deliveredCount),
+		zap.Int("events_skipped", len(webhooks)-deliveredCount),
+	)
+}
+
 // triggerSubscriptionLifecycle triggers the webhook waterfall for subscription lifecycle
 // This simulates: subscription.created → invoice.created → invoice.finalized → charge.succeeded → invoice.paid → subscription.updated
 func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {

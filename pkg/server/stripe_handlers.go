@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -201,11 +202,14 @@ func (s *Server) handleCompleteCheckoutSession(r *http.Request, pathParams map[s
 	)
 
 	// Trigger checkout.session.completed webhook asynchronously
+	// Marshal to JSON now to avoid racing with writeResponse
+	sessionJSON, _ := json.Marshal(updated)
+	sessionID := updated.Id
 	s.wg.Add(1)
-	go func() {
+	go func(jsonBytes []byte, id string) {
 		defer s.wg.Done()
-		s.triggerWebhookEvent(stripe.EventTypeCheckoutSessionCompleted, newWebhookCheckoutSession(updated, s.gateway))
-	}()
+		s.triggerWebhookEventBytes(stripe.EventTypeCheckoutSessionCompleted, "checkout.session", id, jsonBytes)
+	}(sessionJSON, sessionID)
 
 	// For subscription-mode checkouts, fire invoice.paid to activate the subscription
 	// This follows Stripe's actual behavior where invoice.paid follows checkout completion
@@ -421,7 +425,11 @@ func (s *Server) handleUpdateProduct(r *http.Request, pathParams map[string]stri
 		return http.StatusInternalServerError, nil, err
 	}
 
-	go s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing, s.gateway))
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerWebhookEvent(stripe.EventTypeProductUpdated, newWebhookProduct(existing, s.gateway))
+	}()
 	return http.StatusOK, existing, nil
 }
 
@@ -721,7 +729,11 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 
 	// Trigger subscription.updated webhook (only for cancel_at_period_end changes)
 	if needsWebhook {
-		go s.triggerSubscriptionUpdate(sub)
+		s.wg.Add(1)
+		go func(s *Server, sub *api.Subscription) {
+			defer s.wg.Done()
+			s.triggerSubscriptionUpdate(sub)
+		}(s, sub)
 	}
 
 	return http.StatusOK, sub, nil
@@ -1042,7 +1054,11 @@ func (s *Server) handlePauseSubscription(r *http.Request, pathParams map[string]
 	}
 
 	// Trigger subscription.paused webhook
-	go s.triggerSubscriptionPaused(paused)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerSubscriptionPaused(paused)
+	}()
 
 	return http.StatusOK, paused, nil
 }
@@ -1065,7 +1081,11 @@ func (s *Server) handleResumeSubscription(r *http.Request, pathParams map[string
 	}
 
 	// Trigger subscription.resumed webhook
-	go s.triggerSubscriptionResumed(resumed)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.triggerSubscriptionResumed(resumed)
+	}()
 
 	return http.StatusOK, resumed, nil
 }

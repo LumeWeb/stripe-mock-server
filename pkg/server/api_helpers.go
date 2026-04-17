@@ -17,8 +17,9 @@ type webhookCustomer struct {
 func (w *webhookCustomer) GetID() string     { return w.customer.Id }
 func (w *webhookCustomer) GetObject() string { return string(w.customer.Object) }
 func (w *webhookCustomer) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.customer, w.gw)
-	return json.Marshal(w.customer)
+	customerCopy := *w.customer
+	expander.MustExpand(&customerCopy, w.gw)
+	return json.Marshal(&customerCopy)
 }
 
 // webhookProduct wraps *api.Product for use as APIObject
@@ -30,8 +31,9 @@ type webhookProduct struct {
 func (w *webhookProduct) GetID() string     { return w.product.Id }
 func (w *webhookProduct) GetObject() string { return string(w.product.Object) }
 func (w *webhookProduct) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.product, w.gw)
-	return json.Marshal(w.product)
+	productCopy := *w.product
+	expander.MustExpand(&productCopy, w.gw)
+	return json.Marshal(&productCopy)
 }
 
 // webhookPrice wraps *api.Price for use as APIObject
@@ -43,8 +45,9 @@ type webhookPrice struct {
 func (w *webhookPrice) GetID() string     { return w.price.Id }
 func (w *webhookPrice) GetObject() string { return string(w.price.Object) }
 func (w *webhookPrice) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.price, w.gw)
-	return json.Marshal(w.price)
+	priceCopy := *w.price
+	expander.MustExpand(&priceCopy, w.gw)
+	return json.Marshal(&priceCopy)
 }
 
 // webhookCheckoutSession wraps *api.CheckoutSession for use as APIObject
@@ -56,8 +59,10 @@ type webhookCheckoutSession struct {
 func (w *webhookCheckoutSession) GetID() string     { return w.session.Id }
 func (w *webhookCheckoutSession) GetObject() string { return "checkout.session" }
 func (w *webhookCheckoutSession) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.session, w.gw)
-	return json.Marshal(w.session)
+	// Make a copy to avoid racing with the original resource
+	sessionCopy := *w.session
+	expander.MustExpand(&sessionCopy, w.gw)
+	return json.Marshal(&sessionCopy)
 }
 
 // webhookSubscription wraps *api.Subscription for use as APIObject
@@ -69,8 +74,9 @@ type webhookSubscription struct {
 func (w *webhookSubscription) GetID() string     { return w.subscription.Id }
 func (w *webhookSubscription) GetObject() string { return "subscription" }
 func (w *webhookSubscription) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.subscription, w.gw)
-	return json.Marshal(w.subscription)
+	subCopy := *w.subscription
+	expander.MustExpand(&subCopy, w.gw)
+	return json.Marshal(&subCopy)
 }
 
 // webhookInvoice wraps *api.Invoice for use as APIObject
@@ -82,8 +88,9 @@ type webhookInvoice struct {
 func (w *webhookInvoice) GetID() string     { return w.invoice.Id }
 func (w *webhookInvoice) GetObject() string { return "invoice" }
 func (w *webhookInvoice) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.invoice, w.gw)
-	return json.Marshal(w.invoice)
+	invoiceCopy := *w.invoice
+	expander.MustExpand(&invoiceCopy, w.gw)
+	return json.Marshal(&invoiceCopy)
 }
 
 // webhookCharge wraps *api.Charge for use as APIObject
@@ -95,8 +102,9 @@ type webhookCharge struct {
 func (w *webhookCharge) GetID() string     { return w.charge.Id }
 func (w *webhookCharge) GetObject() string { return "charge" }
 func (w *webhookCharge) MarshalJSON() ([]byte, error) {
-	expander.MustExpand(w.charge, w.gw)
-	return json.Marshal(w.charge)
+	chargeCopy := *w.charge
+	expander.MustExpand(&chargeCopy, w.gw)
+	return json.Marshal(&chargeCopy)
 }
 
 // Constructor functions
