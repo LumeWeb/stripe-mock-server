@@ -349,6 +349,13 @@ func (s *WebhookService) Close() {
 	s.workerPool.Stop()
 }
 
+// Drain waits for all pending webhook deliveries to complete
+// This is useful in tests to ensure asynchronous webhook logging
+// doesn't race with test completion
+func (s *WebhookService) Drain() {
+	s.workerPool.StopWait()
+}
+
 // CreateOpts for creating a webhook
 type CreateOpts struct {
 	URL         string

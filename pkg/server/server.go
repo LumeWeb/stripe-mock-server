@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/stripe/stripe-go/v85"
@@ -60,6 +61,7 @@ type Server struct {
 	webhook        *WebhookService
 	extendedLogger *zap.Logger
 	apiVersion     string
+	wg             sync.WaitGroup // tracks async goroutines for testing
 }
 
 // NewServer creates a new Server
@@ -93,6 +95,12 @@ func NewServer(spec *spec.Spec, verbose bool, apiVersion string, logger *zap.Log
 	s.mux.HandleFunc("POST /v1/reset", s.handleReset)
 
 	return s, nil
+}
+
+// Wait blocks until all async goroutines complete.
+// Useful in tests to prevent race conditions on logger.
+func (s *Server) Wait() {
+	s.wg.Wait()
 }
 
 // zap returns the logger to use (either injected or global)

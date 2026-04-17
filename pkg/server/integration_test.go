@@ -23,6 +23,11 @@ func setupTestServer(t *testing.T, verbose bool) *Server {
 	assert.NoError(t, err)
 	// Register custom Stripe handlers so HTTP routes work in tests
 	assert.NoError(t, s.RegisterStripeHandlers())
+	// Ensure webhooks complete before test ends to avoid race on t.Log
+	t.Cleanup(func() {
+		s.Wait() // wait for async goroutines
+		s.webhook.Drain()
+	})
 	return s
 }
 
