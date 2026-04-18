@@ -777,6 +777,11 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 
 // triggerSubscriptionUpdate triggers subscription.updated webhook event
 func (s *Server) triggerSubscriptionUpdate(subscription *api.Subscription) {
+	s.zap().Debug("triggerSubscriptionUpdate called",
+		zap.String("subscription_id", subscription.Id),
+		zap.String("status", string(subscription.Status)),
+		zap.Bool("cancel_at_period_end", subscription.CancelAtPeriodEnd),
+	)
 	s.triggerSubscriptionEvent(stripe.EventTypeCustomerSubscriptionUpdated, subscription)
 }
 
