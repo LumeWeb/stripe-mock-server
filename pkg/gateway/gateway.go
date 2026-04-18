@@ -588,13 +588,13 @@ func (g *Gateway) CancelSubscription(id string) (*api.Subscription, error) {
 
 	// Set status to canceled
 	sub.Status = api.SubscriptionStatusCanceled
-	
-	// Set canceled_at timestamp
+
+	// Set canceled_at timestamp (immediate cancellation takes effect now)
 	canceledAt := int(time.Now().Unix())
 	sub.CanceledAt = &canceledAt
-	
-	// Mark as canceled at period end (immediate, so true)
-	sub.CancelAtPeriodEnd = true
+
+	// Clear cancel_at since cancellation is immediate
+	sub.CancelAt = nil
 
 	// Save updated subscription
 	if err := g.subscriptionRepo.Update(id, *sub); err != nil {
@@ -621,10 +621,12 @@ func (g *Gateway) SetCancelAtPeriodEnd(id string) (*api.Subscription, error) {
 
 	// Set cancel_at_period_end flag
 	sub.CancelAtPeriodEnd = true
-	
-	// Set canceled_at timestamp (when cancellation was requested)
-	canceledAt := int(time.Now().Unix())
-	sub.CanceledAt = &canceledAt
+
+	// Set cancel_at to the end of the current billing period
+	if len(sub.Items.Data) > 0 && sub.Items.Data[0].CurrentPeriodEnd > 0 {
+		cancelAt := sub.Items.Data[0].CurrentPeriodEnd
+		sub.CancelAt = &cancelAt
+	}
 
 	// Save updated subscription
 	if err := g.subscriptionRepo.Update(id, *sub); err != nil {
@@ -650,9 +652,14 @@ func (g *Gateway) ExpireCanceledSubscription(id string) (*api.Subscription, erro
 
 	// Set status to canceled
 	sub.Status = api.SubscriptionStatusCanceled
-	
-	// Clear the flag
+
+	// Set canceled_at (cancellation now takes effect)
+	canceledAt := int(time.Now().Unix())
+	sub.CanceledAt = &canceledAt
+
+	// Clear scheduled cancellation fields
 	sub.CancelAtPeriodEnd = false
+	sub.CancelAt = nil
 
 	// Save updated subscription
 	if err := g.subscriptionRepo.Update(id, *sub); err != nil {

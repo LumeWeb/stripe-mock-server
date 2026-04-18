@@ -660,24 +660,27 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 	var needsWebhook bool
 
 	// Handle cancel_at_period_end flag
-	if cancelAtPeriodEnd, ok := data["cancel_at_period_end"]; ok {
-		if val, ok := cancelAtPeriodEnd.(bool); ok {
-			if val && !sub.CancelAtPeriodEnd {
-				// Schedule cancellation at end of period
-				sub, err = s.gateway.SetCancelAtPeriodEnd(id)
-				if err != nil {
-					return http.StatusBadRequest, nil, err
-				}
-				needsWebhook = true
-			} else if !val && sub.CancelAtPeriodEnd {
-				// Cancel scheduled cancellation
-				sub.CancelAtPeriodEnd = false
-				if err := s.gateway.UpdateSubscription(id, sub); err != nil {
-					return http.StatusBadRequest, nil, err
-				}
-				sub, _ = s.gateway.GetSubscription(id)
-				needsWebhook = true
+	if _, ok := data["cancel_at_period_end"]; ok {
+		val := GetBool(data, "cancel_at_period_end")
+		if val && !sub.CancelAtPeriodEnd {
+			// Schedule cancellation at end of period
+			sub, err = s.gateway.SetCancelAtPeriodEnd(id)
+			if err != nil {
+				return http.StatusBadRequest, nil, err
 			}
+			needsWebhook = true
+		} else if !val && sub.CancelAtPeriodEnd {
+			// Cancel scheduled cancellation
+			sub.CancelAtPeriodEnd = false
+			sub.CancelAt = nil
+			if err := s.gateway.UpdateSubscription(id, sub); err != nil {
+				return http.StatusBadRequest, nil, err
+			}
+			sub, err = s.gateway.GetSubscription(id)
+			if err != nil {
+				return http.StatusInternalServerError, nil, fmt.Errorf("failed to fetch updated subscription: %w", err)
+			}
+			needsWebhook = true
 		}
 	}
 
@@ -695,7 +698,7 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 
 			// Check for deletion
 			if _, ok := item["deleted"]; ok {
-				if val, ok := item["deleted"].(bool); ok && val {
+				if GetBool(item, "deleted") {
 					update.Deleted = true
 				}
 			}

@@ -1824,7 +1824,8 @@ func TestSubscriptionCancellation(t *testing.T) {
 
 		canceled := result.(*api.Subscription)
 		assert.Equal(t, api.SubscriptionStatusCanceled, canceled.Status)
-		assert.True(t, canceled.CancelAtPeriodEnd)
+		assert.False(t, canceled.CancelAtPeriodEnd)
+		assert.Nil(t, canceled.CancelAt)
 		assert.NotNil(t, canceled.CanceledAt)
 	})
 
@@ -1846,7 +1847,16 @@ func TestSubscriptionCancellation(t *testing.T) {
 		updated := result.(*api.Subscription)
 		assert.Equal(t, api.SubscriptionStatusActive, updated.Status) // Still active
 		assert.True(t, updated.CancelAtPeriodEnd)
-		assert.NotNil(t, updated.CanceledAt)
+		assert.NotNil(t, updated.CancelAt)
+		assert.Nil(t, updated.CanceledAt)
+
+		// Verify GET returns the same state (simulates client fetching after webhook)
+		retrieved, err := s.gateway.GetSubscription(sub.Id)
+		require.NoError(t, err)
+		assert.Equal(t, api.SubscriptionStatusActive, retrieved.Status)
+		assert.True(t, retrieved.CancelAtPeriodEnd)
+		assert.NotNil(t, retrieved.CancelAt, "GET after update must return cancel_at")
+		assert.Nil(t, retrieved.CanceledAt, "GET after scheduled cancel must not return canceled_at")
 	})
 
 	t.Run("Expire scheduled cancellation", func(t *testing.T) {
@@ -1956,7 +1966,16 @@ func TestSubscriptionPartialUpdates(t *testing.T) {
 
 		updated := result.(*api.Subscription)
 		assert.True(t, updated.CancelAtPeriodEnd)
+		assert.NotNil(t, updated.CancelAt, "update response must include cancel_at")
+		assert.Nil(t, updated.CanceledAt, "scheduled cancel must not set canceled_at")
 		assert.Equal(t, originalItemID, updated.Items.Data[0].Id) // Items unchanged
+
+		// Verify GET returns the same state
+		retrieved, err := s.gateway.GetSubscription(sub.Id)
+		require.NoError(t, err)
+		assert.True(t, retrieved.CancelAtPeriodEnd)
+		assert.NotNil(t, retrieved.CancelAt, "GET after update must return cancel_at")
+		assert.Nil(t, retrieved.CanceledAt, "GET after scheduled cancel must not return canceled_at")
 	})
 
 	t.Run("Update only items", func(t *testing.T) {
@@ -2021,6 +2040,15 @@ func TestSubscriptionPartialUpdates(t *testing.T) {
 
 		updated := result.(*api.Subscription)
 		assert.False(t, updated.CancelAtPeriodEnd)
+		assert.Nil(t, updated.CancelAt, "cancel_at must be cleared when un-scheduling")
+		assert.Nil(t, updated.CanceledAt, "canceled_at must be nil when un-scheduling")
+
+		// Verify GET returns the cleared state
+		retrieved, err := s.gateway.GetSubscription(sub.Id)
+		require.NoError(t, err)
+		assert.False(t, retrieved.CancelAtPeriodEnd)
+		assert.Nil(t, retrieved.CancelAt, "GET after un-schedule must not return cancel_at")
+		assert.Nil(t, retrieved.CanceledAt, "GET after un-schedule must not return canceled_at")
 	})
 }
 
@@ -2496,4 +2524,212 @@ func TestPauseResumeSubscription(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, status)
 		assert.Error(t, err)
 	})
+}
+// TestSubscriptionUpdateWebhookForCancelAtPeriodEnd tests that subscription.update webhooks
+// are triggered when cancel_at_period_end is set or unset
+func TestSubscriptionUpdateWebhookForCancelAtPeriodEnd(t *testing.T) {
+	t.Run("Setting cancel_at_period_end triggers subscription.updated webhook", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription without cancellation flag
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+
+		// Update to schedule cancellation at period end
+		pathParams := map[string]string{"id": sub.Id}
+		updateData := map[string]any{
+			"cancel_at_period_end": true,
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.True(t, updated.CancelAtPeriodEnd)
+		assert.NotNil(t, updated.CancelAt)
+		assert.Nil(t, updated.CanceledAt)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		// Should fire exactly one subscription.updated webhook
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"),
+			"should fire subscription.updated exactly once when cancel_at_period_end is set")
+
+		// Verify webhook contains the subscription data
+		event, found := wc.GetEventByType("customer.subscription.updated")
+		require.True(t, found, "should have subscription.updated event")
+		assert.Equal(t, sub.Id, event["data"].(map[string]any)["object"].(map[string]any)["id"])
+	})
+
+	t.Run("Setting cancel_at_period_end via form-encoded request triggers webhook", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Create active subscription via handler
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+
+		// Simulate Stripe SDK form-encoded POST: cancel_at_period_end comes as string "true"
+		formData := map[string]any{
+			"cancel_at_period_end": "true", // string, not bool — matches form-encoded request
+		}
+
+		pathParams := map[string]string{"id": sub.Id}
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, formData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.True(t, updated.CancelAtPeriodEnd, "cancel_at_period_end should be true after form-encoded update")
+		assert.NotNil(t, updated.CancelAt)
+		assert.Nil(t, updated.CanceledAt)
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		// Should fire exactly one subscription.updated webhook
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"),
+			"should fire subscription.updated when cancel_at_period_end is set via form-encoded request")
+
+		// Verify webhook payload contains cancel_at (not canceled_at for scheduled cancels)
+		event, found := wc.GetEventByType("customer.subscription.updated")
+		require.True(t, found)
+		obj := event["data"].(map[string]any)["object"].(map[string]any)
+		assert.True(t, obj["cancel_at_period_end"].(bool), "webhook payload should have cancel_at_period_end=true")
+		assert.NotNil(t, obj["cancel_at"], "webhook payload should have cancel_at set")
+	})
+
+	t.Run("Unsetting cancel_at_period_end via form-encoded request triggers webhook", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create active subscription and set cancel_at_period_end=true first
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+		pathParams := map[string]string{"id": sub.Id}
+		_, _, err := s.handleUpdateSubscription(nil, pathParams, map[string]any{"cancel_at_period_end": "true"})
+		require.NoError(t, err)
+		time.Sleep(1 * time.Second) // Wait for webhook
+
+		// Now test unsetting it
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		formData := map[string]any{
+			"cancel_at_period_end": "false", // string, not bool — matches form-encoded request
+		}
+
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, formData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.False(t, updated.CancelAtPeriodEnd)
+		assert.Nil(t, updated.CancelAt, "CancelAt should be cleared when un-scheduling cancellation")
+		assert.Nil(t, updated.CanceledAt, "CanceledAt should be nil when un-scheduling cancellation")
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"),
+			"should fire subscription.updated when cancel_at_period_end is unset via form-encoded request")
+	})
+
+	t.Run("Unsetting cancel_at_period_end triggers subscription.updated webhook", func(t *testing.T) {
+		s := setupTestServer(t, false)
+		
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+		pathParams := map[string]string{"id": sub.Id}
+
+		// First, set cancel_at_period_end=true
+		updateData := map[string]any{"cancel_at_period_end": true}
+		_, _, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		time.Sleep(1 * time.Second) // Wait for webhook to fire
+
+		// Now test unsetting it
+		wc := SetupWebhookCapture(t, s)
+		defer wc.Close()
+
+		// Clear the flag and verify webhook is sent
+		updateData = map[string]any{"cancel_at_period_end": false}
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, updateData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.False(t, updated.CancelAtPeriodEnd)
+		assert.Nil(t, updated.CancelAt, "CancelAt should be cleared when un-scheduling cancellation")
+		assert.Nil(t, updated.CanceledAt, "CanceledAt should be nil when un-scheduling cancellation")
+
+		// Wait for webhooks
+		time.Sleep(1 * time.Second)
+
+		// Should fire exactly one subscription.updated webhook
+		assert.Equal(t, 1, wc.CountEventType("customer.subscription.updated"),
+			"should fire subscription.updated exactly once when cancel_at_period_end is unset")
+	})
+
+	t.Run("GET after form-encoded cancel_at_period_end=true returns cancel_at", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create active subscription
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+		pathParams := map[string]string{"id": sub.Id}
+
+		// Simulate Stripe SDK: form-encoded POST with cancel_at_period_end as string
+		formData := map[string]any{
+			"cancel_at_period_end": "true",
+		}
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, formData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		// Verify update response
+		updated := result.(*api.Subscription)
+		assert.True(t, updated.CancelAtPeriodEnd)
+		assert.NotNil(t, updated.CancelAt, "update response must include cancel_at")
+		assert.Nil(t, updated.CanceledAt, "scheduled cancel must not set canceled_at")
+
+		// Simulate client GET after receiving webhook — must return cancel_at
+		retrieved, err := s.gateway.GetSubscription(sub.Id)
+		require.NoError(t, err)
+		assert.Equal(t, api.SubscriptionStatusActive, retrieved.Status)
+		assert.True(t, retrieved.CancelAtPeriodEnd)
+		assert.NotNil(t, retrieved.CancelAt, "GET after update must return cancel_at")
+		assert.Nil(t, retrieved.CanceledAt, "GET after scheduled cancel must not return canceled_at")
+	})
+
+	t.Run("GET after form-encoded cancel_at_period_end=false clears cancel_at", func(t *testing.T) {
+		s := setupTestServer(t, false)
+
+		// Create active subscription and schedule cancellation
+		sub := createTestSubscription(s.gateway, "cus_test", "price_test")
+		pathParams := map[string]string{"id": sub.Id}
+
+		formData := map[string]any{"cancel_at_period_end": "true"}
+		_, _, err := s.handleUpdateSubscription(nil, pathParams, formData)
+		require.NoError(t, err)
+
+		// Now un-schedule — simulate Stripe SDK form-encoded false
+		formData = map[string]any{"cancel_at_period_end": "false"}
+		status, result, err := s.handleUpdateSubscription(nil, pathParams, formData)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status)
+
+		updated := result.(*api.Subscription)
+		assert.False(t, updated.CancelAtPeriodEnd)
+		assert.Nil(t, updated.CancelAt, "update response must clear cancel_at")
+		assert.Nil(t, updated.CanceledAt, "update response must not have canceled_at")
+
+		// Simulate client GET — must not have cancel_at or canceled_at
+		retrieved, err := s.gateway.GetSubscription(sub.Id)
+		require.NoError(t, err)
+		assert.False(t, retrieved.CancelAtPeriodEnd)
+		assert.Nil(t, retrieved.CancelAt, "GET after un-schedule must not return cancel_at")
+		assert.Nil(t, retrieved.CanceledAt, "GET after un-schedule must not return canceled_at")
+	})
+
 }
