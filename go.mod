@@ -1,4 +1,4 @@
-module go.lumeweb.com/stripe-mock-server // v0.0.0
+module go.lumeweb.com/stripe-mock-server // v0.1.0
 
 go 1.26.1
 
