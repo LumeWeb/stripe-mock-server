@@ -5,7 +5,7 @@ This file provides guidance to various AI agents when working with code in this 
 
 ### Build
 ```bash
-go build -o bin/server ./cmd/server/
+go build -o bin/server ./cmd/stripe-mock-server/
 ```
 
 ### Run
@@ -98,7 +98,7 @@ Response: JSON response + Stripe-like formatting
 - Time encoding uses base-62 with reference timestamp `1342389380` (from stripe-mock)
 - Characters: `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`
 
-**`cmd/server/`**: Entry point
+**`cmd/stripe-mock-server/`**: Entry point
 - `main.go`: Creates server, listens on port 8080
 
 ## Key Implementation Details

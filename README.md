@@ -17,7 +17,7 @@ A stateful HTTP mock server for Stripe-like API testing. Implements subscription
 
 ```
 stripe-mock-server/
-├── cmd/server/main.go              # Entry point
+├── cmd/stripe-mock-server/main.go   # Entry point
 ├── pkg/
 │   ├── gateway/                    # Business logic layer
 │   │   ├── gateway.go              # Typed repositories and operations
@@ -41,7 +41,7 @@ stripe-mock-server/
 ## Building
 
 ```bash
-go build -o bin/server ./cmd/server/
+go build -o bin/server ./cmd/stripe-mock-server/
 ```
 
 ## Running
