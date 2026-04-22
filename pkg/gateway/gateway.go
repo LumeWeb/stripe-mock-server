@@ -736,6 +736,11 @@ func (g *Gateway) RenewSubscription(id string) (*api.Subscription, error) {
 		return nil, fmt.Errorf("cannot renew subscription with status %s", sub.Status)
 	}
 	
+	// Renewal indicates the customer is continuing the subscription,
+	// so clear any scheduled cancellation
+	sub.CancelAtPeriodEnd = false
+	sub.CancelAt = nil
+
 	// If subscription has items, update their period fields
 	if len(sub.Items.Data) > 0 {
 		// Get interval from first item (simplified - assumes monthly)
