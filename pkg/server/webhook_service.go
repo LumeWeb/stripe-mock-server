@@ -29,7 +29,7 @@ const (
 )
 
 const (
-	defaultApiVersion = "2020-08-27"
+	defaultApiVersion = stripe.APIVersion
 )
 
 // eventSequence is a global counter for generating incrementing event timestamps
