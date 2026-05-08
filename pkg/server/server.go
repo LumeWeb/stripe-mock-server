@@ -294,6 +294,48 @@ func (s *Server) triggerWebhookEventBytes(eventType stripe.EventType, resourceTy
 	)
 }
 
+// Stripe API 2025-03-31+: subscription ID moved from line.Subscription to line.Parent.SubscriptionItemDetails.Subscription.
+// Both fields populated for backward compatibility.
+func setLineItemParentSubscription(lineItem *api.LineItem, subscriptionID string) {
+	subItemParent := api.BillingBillResourceInvoicingLinesParentsInvoiceLineItemSubscriptionItemParent{
+		Subscription:      &subscriptionID,
+		SubscriptionItem: "si_" + generator.RandomString(14),
+		Proration:        false,
+	}
+
+	var subItemDetails api.BillingBillResourceInvoicingLinesParentsInvoiceLineItemParent_SubscriptionItemDetails
+	_ = subItemDetails.FromBillingBillResourceInvoicingLinesParentsInvoiceLineItemSubscriptionItemParent(subItemParent)
+
+	lineItemParent := api.BillingBillResourceInvoicingLinesParentsInvoiceLineItemParent{
+		SubscriptionItemDetails: &subItemDetails,
+		Type: api.BillingBillResourceInvoicingLinesParentsInvoiceLineItemParentTypeSubscriptionItemDetails,
+	}
+
+	lineItem.Parent = &api.LineItem_Parent{}
+	_ = lineItem.Parent.FromBillingBillResourceInvoicingLinesParentsInvoiceLineItemParent(lineItemParent)
+}
+
+// Stripe API 2025-03-31+: invoice.Parent.SubscriptionDetails added as subscription lookup fallback.
+func setInvoiceParentSubscription(invoice *api.Invoice, subscriptionID string) {
+	var subUnion api.BillingBillResourceInvoicingParentsInvoiceSubscriptionParent_Subscription
+	_ = subUnion.FromBillingBillResourceInvoicingParentsInvoiceSubscriptionParentSubscription0(subscriptionID)
+
+	subParent := api.BillingBillResourceInvoicingParentsInvoiceSubscriptionParent{
+		Subscription: subUnion,
+	}
+
+	var subDetails api.BillingBillResourceInvoicingParentsInvoiceParent_SubscriptionDetails
+	_ = subDetails.FromBillingBillResourceInvoicingParentsInvoiceSubscriptionParent(subParent)
+
+	invoiceParent := api.BillingBillResourceInvoicingParentsInvoiceParent{
+		SubscriptionDetails: &subDetails,
+		Type:               api.BillingBillResourceInvoicingParentsInvoiceParentTypeSubscriptionDetails,
+	}
+
+	invoice.Parent = &api.Invoice_Parent{}
+	_ = invoice.Parent.FromBillingBillResourceInvoicingParentsInvoiceParent(invoiceParent)
+}
+
 // triggerSubscriptionLifecycle triggers the webhook waterfall for subscription lifecycle
 // This simulates: subscription.created → invoice.created → invoice.finalized → charge.succeeded → invoice.paid → subscription.updated
 func (s *Server) triggerSubscriptionLifecycle(subscriptionID string) {
@@ -762,9 +804,12 @@ func (s *Server) triggerInvoicePaidForSubscription(subscriptionID string, billin
 	}
 	lineItem.Subscription = &api.LineItem_Subscription{}
 	_ = lineItem.Subscription.FromLineItemSubscription0(subscriptionID)
+	setLineItemParentSubscription(&lineItem, subscriptionID)
 
 	invoice.Lines.Data = []api.LineItem{lineItem}
 	invoice.Lines.Object = api.InvoiceLinesListObjectList
+
+	setInvoiceParentSubscription(invoice, subscriptionID)
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
 	if err != nil {
@@ -885,6 +930,9 @@ func (s *Server) triggerInvoiceWaterfall(amount int, currency string, subscripti
 		}
 		invoice.Lines.Data[0].Subscription = &api.LineItem_Subscription{}
 		_ = invoice.Lines.Data[0].Subscription.FromLineItemSubscription0(subscription.Id)
+		setLineItemParentSubscription(&invoice.Lines.Data[0], subscription.Id)
+
+		setInvoiceParentSubscription(invoice, subscription.Id)
 	}
 
 	createdInvoice, err := s.gateway.CreateInvoice(invoice)
