@@ -684,6 +684,63 @@ func (s *Server) handleUpdateSubscription(r *http.Request, pathParams map[string
 		}
 	}
 
+	// Handle pause_collection
+	if _, ok := data["pause_collection"]; ok {
+		pcMap, isMap := data["pause_collection"].(map[string]any)
+		if isMap {
+			behavior := GetString(pcMap, "behavior")
+			if behavior != "" {
+				var resumesAt *int
+				if ra := GetInt64(pcMap, "resumes_at"); ra > 0 {
+					v := int(ra)
+					resumesAt = &v
+				}
+
+				pauseCollection := api.SubscriptionsResourcePauseCollection{
+					Behavior: api.SubscriptionsResourcePauseCollectionBehavior(behavior),
+				}
+				if resumesAt != nil {
+					pauseCollection.ResumesAt = resumesAt
+				}
+
+				var pcUnion api.Subscription_PauseCollection
+				_ = pcUnion.FromSubscriptionsResourcePauseCollection(pauseCollection)
+				sub.PauseCollection = &pcUnion
+
+				if err := s.gateway.UpdateSubscription(id, sub); err != nil {
+					return http.StatusBadRequest, nil, err
+				}
+				sub, err = s.gateway.GetSubscription(id)
+				if err != nil {
+					return http.StatusInternalServerError, nil, fmt.Errorf("failed to fetch updated subscription: %w", err)
+				}
+				needsWebhook = true
+			} else {
+				// Empty behavior in map → clear pause_collection
+				sub.PauseCollection = nil
+				if err := s.gateway.UpdateSubscription(id, sub); err != nil {
+					return http.StatusBadRequest, nil, err
+				}
+				sub, err = s.gateway.GetSubscription(id)
+				if err != nil {
+					return http.StatusInternalServerError, nil, fmt.Errorf("failed to fetch updated subscription: %w", err)
+				}
+				needsWebhook = true
+			}
+		} else {
+			// pause_collection= (empty string) → clear pause_collection
+			sub.PauseCollection = nil
+			if err := s.gateway.UpdateSubscription(id, sub); err != nil {
+				return http.StatusBadRequest, nil, err
+			}
+			sub, err = s.gateway.GetSubscription(id)
+			if err != nil {
+				return http.StatusInternalServerError, nil, fmt.Errorf("failed to fetch updated subscription: %w", err)
+			}
+			needsWebhook = true
+		}
+	}
+
 	// Handle items update (plan change)
 	items := GetMapSlice(data, "items")
 	if len(items) > 0 {
